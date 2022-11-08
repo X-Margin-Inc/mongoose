@@ -118,7 +118,7 @@ riscv: mongoose.h $(SRCS)
 	$(DOCKER) mdashnet/riscv riscv-none-elf-gcc -march=rv32imc -mabi=ilp32 $(SRCS) $(OPTS) $(WARN) $(INCS) $(DEFS) $(TFLAGS) -o unit_test
 
 wasm: WASI_SDK_PATH ?= /opt/wasi-sdk
-wasm: WAMR_PATH ?= /opt/wamr
+wasm: WAMR_PATH ?= /opt/wasm-micro-runtime
 wasm: ASAN=
 wasm: CFLAGS += -DWOLFSSL_WASM=1
 wasm: INCS += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
