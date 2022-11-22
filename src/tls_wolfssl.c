@@ -70,6 +70,11 @@ void mg_tls_init(struct mg_connection *c, const struct mg_tls_opts *opts) {
       //wolfSSL_CTX_set_mode(tls->ctx, WOLFSSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     }
   }
+  
+         
+#ifdef HAVE_SNI
+  wolfSSL_CTX_UseSNI(tls->ctx, 0, opts->srvname.ptr,  (word16) opts->srvname.len);
+#endif
 
   tls->ssl = wolfSSL_new(tls->ctx);
   if (tls->ssl == NULL) {
