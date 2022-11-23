@@ -1,4 +1,5 @@
-SRCS = mongoose.c test/unit_test.c test/packed_fs.c
+#SRCS = mongoose.c test/unit_test.c test/packed_fs.c
+SRCS = mongoose.c examples/http-client/main.c 
 HDRS = $(wildcard src/*.h) $(wildcard mip/*.h)
 DEFS ?= -DMG_MAX_HTTP_HEADERS=7 -DMG_ENABLE_LINES -DMG_ENABLE_PACKED_FS=1 -DMG_ENABLE_SSI=1
 WARN ?= -pedantic -W -Wall -Werror -Wshadow -Wdouble-promotion -fno-common -Wconversion -Wundef
@@ -42,7 +43,7 @@ LDFLAGS ?= -L$(OPENSSL)/lib -lssl -lcrypto
 endif
 
 ifeq "$(SSL)" "WOLFSSL"
-WOLFSSL ?= /usr/local
+WOLFSSL ?= /opt/wolfssl
 CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include
 LDFLAGS ?= -L$(WOLFSSL)/lib -lwolfssl
 ifdef MG_ENABLE_WOLFSSL_DEBUG
@@ -118,28 +119,32 @@ riscv: mongoose.h $(SRCS)
 	$(DOCKER) mdashnet/riscv riscv-none-elf-gcc -march=rv32imc -mabi=ilp32 $(SRCS) $(OPTS) $(WARN) $(INCS) $(DEFS) $(TFLAGS) -o unit_test
 
 wasm: WASI_SDK_PATH ?= /opt/wasi-sdk
-wasm: WAMR_PATH ?= /opt/wasm-micro-runtime
+wasm: WAMR_PATH ?= /wasm-micro-runtime
 wasm: ASAN=
 wasm: CFLAGS += -DWOLFSSL_WASM=1
 wasm: INCS += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
 wasm: WARN += -Wno-sign-conversion -Wno-unused-variable -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
 wasm: IPV6 = 0
 wasm: WOLFSSL = ../wolfssl
+wasm: CFLAGS  += -I.
 wasm: CFLAGS  += -I$(WOLFSSL)
+wasm: CFLAGS  += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
 wasm: LDFLAGS += -L$(WOLFSSL)/IDE/Wasm -lwolfssl
 wasm: Makefile mongoose.h $(SRCS)
 	if [ ! -d "$(WOLFSSL)" ]; then echo "The WOLFSSL variable does not point on a valid folder: $(WOLFSSL)"; exit 1; fi
-	$(WASI_SDK_PATH)/bin/clang \
+	$(WASI_SDK_PATH)/bin/clang -O3 \
 		--target=wasm32-wasi \
 		-Wl,--export=malloc -Wl,--export=free \
 		-z stack-size=655360 \
 		--sysroot=$(WASI_SDK_PATH)/share/wasi-sysroot/ \
 		-Wl,--allow-undefined-file=$(WASI_SDK_PATH)/share/wasi-sysroot/share/wasm32-wasi/defined-symbols.txt \
-		-Wl,--strip-all \
 		$(CFLAGS) \
 		$(LDFLAGS) \
 		-o mongoose.wasm \
 		$(SRCS) $(WAMR_PATH)/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c
+
+
+#-Wl,--strip-all 
 
 vc98: Makefile mongoose.h $(SRCS)
 	$(DOCKER) mdashnet/vc98 wine cl $(SRCS) $(VCFLAGS) ws2_32.lib /Fe$@.exe

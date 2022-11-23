@@ -1,0 +1,33 @@
+[
+ {
+  "directory": "/home/dev/sample/cscore/cscore-common/Wasm/mongoose",
+  "arguments": [
+   "/opt/wasi-sdk/bin/clang",
+   "-O3",
+   "--target=wasm32-wasi",
+   "-Wl,--export=malloc",
+   "-Wl,--export=free",
+   "-z",
+   "stack-size=655360",
+   "--sysroot=/opt/wasi-sdk/share/wasi-sysroot/",
+   "-Wl,--allow-undefined-file=/opt/wasi-sdk/share/wasi-sysroot/share/wasm32-wasi/defined-symbols.txt",
+   "-DMG_ENABLE_WOLFSSL=1",
+   "-I/opt/wolfssl//include",
+   "-DMG_ENABLE_WOLFSSL_DEBUG",
+   "-DWOLFSSL_WASM=1",
+   "-I/opt/wolfssl/",
+   "-I.",
+   "-I/wasm-micro-runtime/core/iwasm/libraries/lib-socket/inc",
+   "-L/opt/wolfssl//lib",
+   "-lwolfssl",
+   "-L/opt/wolfssl//IDE/Wasm",
+   "-lwolfssl",
+   "-o",
+   "mongoose.wasm",
+   "mongoose.c",
+   "examples/http-client/main.c",
+   "/wasm-micro-runtime/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c"
+  ],
+  "file": "/wasm-micro-runtime/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c"
+ }
+]
