@@ -1,5 +1,6 @@
 #SRCS = mongoose.c test/unit_test.c test/packed_fs.c
-SRCS = mongoose.c examples/http-client/main.c 
+#SRCS = mongoose.c examples/http-client/main.c 
+SRCS = mongoose.c 
 HDRS = $(wildcard src/*.h) $(wildcard mip/*.h)
 DEFS ?= -DMG_MAX_HTTP_HEADERS=7 -DMG_ENABLE_LINES -DMG_ENABLE_PACKED_FS=1 -DMG_ENABLE_SSI=1
 WARN ?= -pedantic -W -Wall -Werror -Wshadow -Wdouble-promotion -fno-common -Wconversion -Wundef
@@ -132,7 +133,7 @@ wasm: CFLAGS  += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
 wasm: LDFLAGS += -L$(WOLFSSL)/IDE/Wasm -lwolfssl
 wasm: Makefile mongoose.h $(SRCS)
 	if [ ! -d "$(WOLFSSL)" ]; then echo "The WOLFSSL variable does not point on a valid folder: $(WOLFSSL)"; exit 1; fi
-	$(WASI_SDK_PATH)/bin/clang -O3 \
+	$(WASI_SDK_PATH)/bin/clang -O3 -c -fPIC \
 		--target=wasm32-wasi \
 		-Wl,--export=malloc -Wl,--export=free \
 		-z stack-size=655360 \
@@ -140,8 +141,9 @@ wasm: Makefile mongoose.h $(SRCS)
 		-Wl,--allow-undefined-file=$(WASI_SDK_PATH)/share/wasi-sysroot/share/wasm32-wasi/defined-symbols.txt \
 		$(CFLAGS) \
 		$(LDFLAGS) \
-		-o mongoose.wasm \
 		$(SRCS) $(WAMR_PATH)/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c
+wasm:   $(shell /opt/wasi-sdk/bin/llvm-ar r libmongoose.a mongoose.o wasi_socket_ext.o )
+
 
 
 #-Wl,--strip-all 

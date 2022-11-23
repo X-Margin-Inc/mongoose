@@ -1,3 +1,9 @@
+to build wasm lib:
+
+make -C . wasm SSL=WOLFSSL MG_ENABLE_WOLFSSL_DEBUG=0 WAMR_PATH=/wasm-micro-runtime WOLFSSL=/opt/wolfssl/
+
+see build.sh for c++ module 
+
 # Mongoose - Embedded Web Server / Embedded Networking Library
 
 [![License: GPLv2/Commercial](https://img.shields.io/badge/License-GPLv2%20or%20Commercial-green.svg)](https://opensource.org/licenses/gpl-2.0.php)
