@@ -1,72 +1,144 @@
-// Copyright (c) 2021 Cesanta Software Limited
-// All rights reserved
-//
-// Example HTTP client. Connect to `s_url`, send request, wait for a response,
-// print the response and exit.
-// You can change `s_url` from the command line by executing: ./example YOUR_URL
-//
-// To enable SSL/TLS, make SSL=OPENSSL or make SSL=MBEDTLS
-
+#include <array>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <json.hpp>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string>
+#define IS_SGX
 #include "mongoose.h"
+#include "exchange-client.h"
+#include "side-core-utils.hpp"
 
-// The very first web page in history. You can replace it from command line
-static const char *s_url = "https://api.binance.com/";
-static const char *s_post_data = NULL;      // POST data
-static const uint64_t s_timeout_ms = 1500;  // Connect timeout in milliseconds
 
-// Print HTTP response and signal that we're done
-static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
-  if (ev == MG_EV_OPEN) {
-    // Connection created. Store connect expiration time in c->label
-    *(uint64_t *) c->label = mg_millis() + s_timeout_ms;
-  } else if (ev == MG_EV_POLL) {
-    if (mg_millis() > *(uint64_t *) c->label &&
-        (c->is_connecting || c->is_resolving)) {
-      mg_error(c, "Connect timeout");
+std::string privKey;
+std::string certificate;
+static const char* s_https_addr = "https://0.0.0.0:8866";
+static const char* s_root_dir = ".";
+static uint64_t computation_salt;
+
+
+static void
+fn(struct mg_connection* c, int ev, void* ev_data, void* fn_data)
+{
+    nlohmann::json jresp;
+    jresp["result"] = "error";
+
+    if(ev == MG_EV_ACCEPT && fn_data != NULL) {
+        struct mg_tls_opts opts = {
+            //.ca = "ca.pem",         // Uncomment to enable two-way SSL
+            .cert = certificate
+                        .c_str(), // "/mongoose_certs/cert.pem"
+            .certkey = privKey.c_str() // "/mongoose_certs/privkey.pem"
+        };
+        mg_tls_init(c, &opts);
     }
-  } else if (ev == MG_EV_CONNECT) {
-    // Connected to server. Extract host name from URL
-    struct mg_str host = mg_url_host(s_url);
+    else if(ev == MG_EV_HTTP_MSG) {
 
-    // If s_url is https://, tell client connection to use TLS
-    if (mg_url_is_ssl(s_url)) {
-      struct mg_tls_opts opts = { .srvname = host};
-      mg_tls_init(c, &opts);
+        struct mg_http_message* hm = (struct mg_http_message*)ev_data;
+        struct mg_str url_params[3];
+        if(mg_match(hm->uri, mg_str("/apikeys/*/*"), url_params)) {
+          std::string exchange_str =
+              std::string(url_params[0].ptr, url_params[0].len);
+          std::string operation =
+              std::string(url_params[1].ptr, url_params[1].len);
+          struct mg_str request = hm->body;
+
+          std::string json_msg = std::string(request.ptr, request.len);
+
+          if(!nlohmann::json::accept(json_msg)) {
+              jresp["result"] = "error";
+              jresp["reason"] = "invalid-json";
+              mg_http_reply(c, 400, "", jresp.dump().c_str(), hm->uri.ptr);
+              return;
+          }
+          auto jdoc = nlohmann::json::parse(json_msg);
+          if(!jdoc.contains("uuid") || !jdoc.contains("key_id") ||
+              !jdoc.contains("apikey")) {
+              jresp["result"] = "error";
+              jresp["reason"] = "missing-json-field";
+              mg_http_reply(c, 400, "", jresp.dump().c_str(), hm->uri.ptr);
+              return;
+          }
+
+          std::string uuid = jdoc["uuid"].get<std::string>();
+          std::string key_id = jdoc["key_id"].get<std::string>();
+          if(operation == "insert") {  
+              printf("[WASM-CORE] INSERT request received - Exchange: %s - "
+                      "User: %s\n\n",
+                      exchange_str.c_str(),
+                      uuid.c_str());
+
+              jdoc["exchange"] = exchange_str;
+
+              // Skipping the key verification with DeFi venues. Just pushing
+              // in the storage
+
+              std::string json_reqstr = jdoc.dump();
+              std::string result;
+              auto resfunc =
+                  make_request((uint32_t)(uintptr_t)json_reqstr.c_str(),
+                                json_reqstr.length(),
+                                result);
+
+              if(resfunc == -1) {
+                  jresp["reason"] = "invalid-venue";
+                  mg_http_reply(c,
+                                401,
+                                "",
+                                jresp.dump().c_str(),
+                                (int)hm->uri.len,
+                                hm->uri.ptr);
+                  return;
+              }
+
+              nlohmann::json j_result_req = nlohmann::json::parse(result);
+              if(j_result_req["code"].get<int>() > 200) {
+                  jresp["reason"] = j_result_req["result"];
+                  mg_http_reply(c,
+                                401,
+                                "",
+                                jresp.dump().c_str(),
+                                (int)hm->uri.len,
+                                hm->uri.ptr);
+                  return;
+              }
+          }
+        }
+        else {
+            jresp["result"] = "error";
+            jresp["reason"] = "URI-not-found";
+            mg_http_reply(c,
+                          404,
+                          "",
+                          jresp.dump().c_str(),
+                          (int)hm->uri.len,
+                          hm->uri.ptr);
+        }
     }
-
-    // Send request
-    int content_length = s_post_data ? strlen(s_post_data) : 0;
-    mg_printf(c,
-              "%s %s HTTP/1.0\r\n"
-              "Host: %.*s\r\n"
-              "Content-Type: octet-stream\r\n"
-              "Content-Length: %d\r\n"
-              "\r\n",
-              s_post_data ? "POST" : "GET", mg_url_uri(s_url), (int) host.len,
-              host.ptr, content_length);
-    mg_send(c, s_post_data, content_length);
-  } else if (ev == MG_EV_HTTP_MSG) {
-    // Response is received. Print it
-    struct mg_http_message *hm = (struct mg_http_message *) ev_data;
-    printf("%.*s", (int) hm->message.len, hm->message.ptr);
-    c->is_closing = 1;         // Tell mongoose to close this connection
-    *(bool *) fn_data = true;  // Tell event loop to stop
-  } else if (ev == MG_EV_ERROR) {
-    *(bool *) fn_data = true;  // Error, tell event loop to stop
-  }
+    (void)fn_data;
 }
 
-int main(int argc, char *argv[]) {
-  const char *log_level = getenv("LOG_LEVEL");  // Allow user to set log level
-  if (log_level == NULL) log_level = "4";       // Default is verbose
 
-  struct mg_mgr mgr;              // Event manager
-  bool done = false;              // Event handler flips it to true
-  if (argc > 1) s_url = argv[1];  // Use URL provided in the command line
-  mg_log_set(atoi(log_level));    // Set to 0 to disable debug
-  mg_mgr_init(&mgr);              // Initialise event manager
-  mg_http_connect(&mgr, s_url, fn, &done);  // Create client connection
-  while (!done) mg_mgr_poll(&mgr, 50);      // Event manager loops until 'done'
-  mg_mgr_free(&mgr);                        // Free resources
-  return 0;
+int
+main(int argc, char* argv[])
+{
+
+    printf("[WASM-CORE] Started Core module\n");
+    struct mg_mgr mgr; // Event manager
+    mg_log_set(MG_LL_DEBUG); // Set log level
+
+    create_cert_files("",
+                  "");
+
+
+    // mg_mgr_init(&mgr); // Initialise event manager
+    // mg_http_listen(&mgr, s_https_addr, fn, (void*)1); // HTTPS listener
+    // for(;;) {
+    //     mg_mgr_poll(&mgr, 300);
+    // }
+    // mg_mgr_free(&mgr);
+
+    return 0;
 }

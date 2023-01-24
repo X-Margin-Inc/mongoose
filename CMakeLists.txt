@@ -203,11 +203,18 @@ link_libraries(wolfssl)
 include_directories(${CMAKE_SOURCE_DIR}/include ${WOLFSSL_ROOT} ${WOLFSSL_ROOT}/wolfssl ${WAMR_PATH}/core/iwasm/libraries/lib-socket/inc/ ${WAMR_PATH}/core/iwasm/libraries/lib-rats)
 
 include_directories(./)
-
+include_directories(/usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/)
+include_directories(/usr/src/app//cscore-common/include)
+include_directories(/usr/src/app//cscore-common/Wasm/Modules)
+include_directories(/usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator)
 
 
 file(GLOB CORE_SRC testdns.cpp)
-add_library(kms_core_lib ${CORE_SRC})
+file(GLOB EXCHANGE_CLIENT /usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/exchange-client.cpp /usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/ExchangeHandlers/BaseHandler.cpp)
+file(GLOB SIGNATURE_GENERATOR /usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator/signature-generator.cpp /usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator/Crypto/Crypto.cpp )
+file(GLOB HTTP_CLIENT ${HOME_ROOT}/cscore-common/Wasm/Modules/HttpClient/http-client.cpp )
+
+add_library(kms_core_lib ${CORE_SRC} ${EXCHANGE_CLIENT} ${HTTP_CLIENT} ${SIGNATURE_GENERATOR})
 target_link_libraries( kms_core_lib mongoose_lib)
 
 add_executable(testdns.wasm testdns.cpp )
