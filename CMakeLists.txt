@@ -1,15 +1,15 @@
-cmake_minimum_required(VERSION 3.20)
-#Note: The following 3 variables should be set before project() call
-set(CMAKE_TOOLCHAIN_FILE "/opt/wasi-sdk/share/cmake/wasi-sdk.cmake")#Set paths to compilers
-set(WASI_SDK_PREFIX "/opt/wasi-sdk") #Used by toolchain file(wasi-sdk.cmake)
-set(CMAKE_SYSROOT "/opt/wasi-sdk/share/wasi-sysroot/") #Root directory used for locating headers and libraries
+cmake_minimum_required(VERSION 3.16)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_TOOLCHAIN_FILE "/opt/wasi-sdk/share/cmake/wasi-sdk.cmake")
+set(WASI_SDK_PREFIX "/opt/wasi-sdk") 
+set(CMAKE_SYSROOT "/opt/wasi-sdk/share/wasi-sysroot/") 
 
 project(kms-modules)
-
 
 set(CMAKE_CXX_STANDARD 20)
 
 set(default_build_type "Debug")
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "${default_build_type}" CACHE
       STRING "Choose the type of build." FORCE)
@@ -33,27 +33,8 @@ if(NOT DEFINED WAMR_PATH)
     set(WAMR_PATH "/wasm-micro-runtime")
 endif()
 
-if(NOT DEFINED HOME_ROOT)
-    set(HOME_ROOT "/usr/src/app")
-endif()
-
-file(GLOB MONGOOSE_SRCS mongoose.c ${WAMR_PATH}/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c)
-
-include_directories(src)
-include_directories(mip)
-
-
-
-set(WARN_FLAGS "-pedantic -W -Wall -Werror -Wshadow -Wdouble-promotion -fno-common -Wconversion -Wundef -Wno-deprecated")
-set(OPT_FLAGS "-O3 -g3")
-set(ASAN_FLAGS "-fsanitize=address,undefined,alignment -fno-sanitize-recover=all -fno-omit-frame-pointer -fno-common")
-set(VC_FLAGS "/nologo /W3 /O2 /MD /I. $(DEFS) $(TFLAGS)")
-if(NOT DEFINED SSL)
-    set(SSL "WOLFSSL") 
-endif()
-
-if(NOT DEFINED ASAN_OPTIONS_FLAG)
-    set(ASAN_OPTIONS_FLAG "detect_leaks=1")
+if(NOT DEFINED COMMON_PATH)
+    set(COMMON_PATH "/usr/src/app/cscore-common")
 endif()
 
 if(NOT DEFINED COMMON_CFLAGS)
@@ -72,75 +53,24 @@ if(NOT DEFINED VALGRIND_RUN)
     set(VALGRIND_RUN "valgrind --tool=memcheck --gen-suppressions=all --leak-check=full --show-leak-kinds=all --leak-resolution=high --track-origins=yes --error-exitcode=1 --exit-on-first-error=yes")
 endif()
 
-if(SSL STREQUAL "MBEDTLS")
-    if(NOT DEFINED MBEDTLS)
-        set(MBEDTLS "/usr/local")
-    endif()
-    add_definitions(-DMG_ENABLE_MBEDTLS=1)
-    include_directories(${MBEDTLS}/include /usr/include)
-    link_directories(${MBEDTLS}/lib)
-    link_libraries(mbedtls mbedcrypto mbedx509)
-endif()
+set(WOLFSSL "/opt/wolfssl")
 
-if(SSL STREQUAL "OPENSSL")
-    if(NOT DEFINED WOLFSSL)
-        set(WOLFSSL "/usr/local")
-    endif()
-    add_definitions(-DMG_ENABLE_OPENSSL=1)
-    include_directories(${OPENSSL}/include)
-    link_directories(${OPENSSL}/lib)
-    link_libraries(ssl crypto)
-endif()
-
-if(SSL STREQUAL "WOLFSSL")
-    if(NOT DEFINED WOLFSSL)
-        set(WOLFSSL "/usr/local")
-    endif()
-    add_definitions(-DMG_ENABLE_WOLFSSL=1)
-    add_definitions(-DMG_ENABLE_WOLFSSL_DEBUG)
-    include_directories(${WOLFSSL}/include)
-    link_directories(${WOLFSSL}/lib)
-    link_libraries(wolfssl)
-    # if(MG_ENABLE_WOLFSSL_DEBUG)
-    #     add_definitions(MG_ENABLE_WOLFSSL_DEBUG)
-    # endif()
-endif()
-
+add_definitions(-DMG_ENABLE_WOLFSSL=1)
+add_definitions(-DMG_ENABLE_WOLFSSL_DEBUG)
+add_definitions(-DMG_IO_SIZE=8192*2)
+add_definitions(-DMG_MAX_RECV_SIZE=64*1024*1024)
 add_definitions(-DMG_MAX_HTTP_HEADERS=7)
 add_definitions(-DMG_ENABLE_LINES)
 add_definitions(-DMG_ENABLE_SSI=1)
 add_definitions(-DMG_ENABLE_PACKED_FS=1)
 add_definitions(-DMG_ENABLE_IPV6=0)
+add_definitions(-DMG_ARCH=MG_ARCH_WASM)
 add_definitions(-DWOLFSSL_WASM=1)
 add_definitions(-DSQLITE_OS_OTHER)
 add_definitions(-DSQLITE_ENABLE_MEMSYS3)
 
-# -Wall \
-# -Wextra \
-# -Werror \
-# -pedantic \
-# -Wno-deprecated \
-
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} --target=wasm32-wasi \
-                            -Wl,--export=malloc -Wl,--export=free \
-                            -Wl,--export=realloc \
-                            -Wl,--export=__heap_base \
-                            -Wl,--export=__data_end \
-                            -Wl,--initial-memory=10485760 \
-                            -z stack-size=8388608 \
-                            -Wl,--strip-all \
-                            ${CFLAGS} \
-                            ${LDFLAGS} \
-                            ")
-
-set (CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_DEBUG} -fno-omit-frame-pointer -DNDEBUG -O3")
-
-# -g \
-# -Wall \
-# -Wextra \
-# -Werror \
-# -pedantic \
-# -fpermissive\
+math(EXPR STACK_SIZE "32 * 1024 * 1024")
+math(EXPR INITIAL_MEMORY "128 * 1024 * 1024")
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CFLAGS} ${CMAKE_CXX_FLAGS_DEBUG} \
                                 -Wno-unused-command-line-argument \
@@ -150,11 +80,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CFLAGS} ${CMAKE_CXX_FLAGS_DEBUG} \
                                 -Wl,--export=realloc \
                                 -Wl,--export=__heap_base \
                                 -Wl,--export=__data_end \
-                                -Wl,--initial-memory=10485760 \
-                                -z stack-size=8388608 \
+                                -Wl,--initial-memory=${INITIAL_MEMORY} \
+                                -z stack-size=${STACK_SIZE} \
                                 -Wl,--allow-undefined \
-                                -fwasm-exceptions \
-                                -fno-exceptions \
+                                -fno-omit-frame-pointer \
                                 -Wno-vla-extension \
                                 --sysroot=${WASI_SDK_PATH}/share/wasi-sysroot/ \
                                 --target=wasm32-wasi \
@@ -163,61 +92,37 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CFLAGS} ${CMAKE_CXX_FLAGS_DEBUG} \
 
 set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_DEBUG} -fno-omit-frame-pointer -DNDEBUG -O3")
 
-##################################################################################
-
-
-# if(NOT DEFINED SKIP_CPPCHECK OR NOT SKIP_CPPCHECK)
-#   message("-- SKIP_CPPCHECK: False")
-#   find_program(CMAKE_CPPCHECK NAMES cppcheck)
-#       add_custom_target(cppcheck-analysis ALL
-#           COMMAND ${CMAKE_CPPCHECK} ${CMAKE_CURRENT_SOURCE_DIR} --enable=all --error-exitcode=1 -q --inline-suppr --suppressions-list=${CMAKE_CURRENT_SOURCE_DIR}/CppCheckSuppressions.txt -i${CMAKE_CURRENT_SOURCE_DIR}/build -i${CMAKE_CURRENT_SOURCE_DIR}/include
-#           VERBATIM
-#           COMMENT "Running Cppcheck")
-# else()
-#   message("-- SKIP_CPPCHECK: True")
-# endif()
-
 set(WAMRC_SIZE_LEVEL 1)
 set(WAMRC_OPT_LEVEL 3)
 set(WAMRC "${WAMR_PATH}/wamr-compiler/build/wamrc")
-# add --enable-dump-call-stack to WAMRC_PARAMS to enable debug stack trace
 set(WAMRC_PARAMS --size-level=${WAMRC_SIZE_LEVEL} --opt-level=${WAMRC_OPT_LEVEL} -sgx)
 
-# include_directories(${WOLFSSL_ROOT}/wolfcrypt ${WOLFSSL_ROOT} /opt  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../crypto ${CMAKE_CURRENT_SOURCE_DIR}/../../include /opt/intel/sgxsdk/include/ ../../Enclave ${WAMR_PATH}/core/iwasm/libraries/lib-socket/inc/)
-
-add_definitions(-DWOLFSSL_WASM -DWOLFSSL_AES_DIRECT -DHAVE_AES_KEYWRAP -DDISABLE_TRACE -DHAVE_WASI_SOCKET -DJSON_HAS_FILESYSTEM=0 -DWAMRC_SIZE_LEVEL=1 -DWAMRC_OPT_LEVEL=3)
-
-set_source_files_properties(${WAMR_PATH}/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c PROPERTIES LANGUAGE CXX )
-set_source_files_properties(${WAMR_PATH}/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c PROPERTIES COMPILE_FLAGS "-Wno-missing-field-initializers -Wno-unused-variable -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function" )
-# add_library(wasi_socket STATIC )
-set_source_files_properties(mongoose.c PROPERTIES LANGUAGE CXX )
-
-add_library(mongoose_lib STATIC ${MONGOOSE_SRCS})
-target_include_directories(mongoose_lib PUBLIC ${WOLFSSL_ROOT}/wolfcrypt ${WOLFSSL_ROOT} /opt ${WOLFSSL_ROOT}/wolfssl ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../crypto ${CMAKE_CURRENT_SOURCE_DIR}/../../include /opt/intel/sgxsdk/include/ ../../Enclave ${WAMR_PATH}/core/iwasm/libraries/lib-socket/inc/ ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-
+add_definitions(-DWOLFSSL_WASM=1 -DWOLFSSL_AES_DIRECT -DHAVE_AES_KEYWRAP -DDISABLE_TRACE -DHAVE_WASI_SOCKET -DJSON_HAS_FILESYSTEM=0 -DWAMRC_SIZE_LEVEL=1 -DWAMRC_OPT_LEVEL=3)
 link_directories(${WASM_WOLFSSL_LIB})
 link_libraries(wolfssl)
 
-
-include_directories(${CMAKE_SOURCE_DIR}/include ${WOLFSSL_ROOT} ${WOLFSSL_ROOT}/wolfssl ${WAMR_PATH}/core/iwasm/libraries/lib-socket/inc/ ${WAMR_PATH}/core/iwasm/libraries/lib-rats)
-
 include_directories(./)
-include_directories(/usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/)
-include_directories(/usr/src/app//cscore-common/include)
-include_directories(/usr/src/app//cscore-common/Wasm/Modules)
-include_directories(/usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator)
+include_directories(${CMAKE_SOURCE_DIR}/include ${WOLFSSL_ROOT} ${WOLFSSL_ROOT}/wolfssl ${WAMR_PATH}/core/iwasm/libraries/lib-socket/inc/ ${WAMR_PATH}/core/iwasm/libraries/lib-rats)
+include_directories(${COMMON_PATH}/Wasm/Modules/ExchangeClient/)
+include_directories(${COMMON_PATH}/include)
+include_directories(${COMMON_PATH}/Wasm/Modules)
+include_directories(${COMMON_PATH}/Wasm/Modules/SignatureGenerator)
 
+set(CORE_SRC testdns.cpp)
+set(EXCHANGE_CLIENT 
+    ${COMMON_PATH}/Wasm/Modules/ExchangeClient/exchange-client.cpp 
+    ${COMMON_PATH}/Wasm/Modules/ExchangeClient/ExchangeHandlers/BaseHandler.cpp)
+set(SIGNATURE_GENERATOR ${COMMON_PATH}/Wasm/Modules/SignatureGenerator/signature-generator.cpp ${COMMON_PATH}/Wasm/Modules/SignatureGenerator/Crypto/Crypto.cpp )
+set(HTTP_CLIENT ${COMMON_PATH}/Wasm/Modules/HttpClient/http-client.cpp )
 
-file(GLOB CORE_SRC testdns.cpp)
-file(GLOB EXCHANGE_CLIENT /usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/exchange-client.cpp /usr/src/app/cscore-common/Wasm/Modules/ExchangeClient/ExchangeHandlers/BaseHandler.cpp)
-file(GLOB SIGNATURE_GENERATOR /usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator/signature-generator.cpp /usr/src/app/cscore-common/Wasm/Modules/SignatureGenerator/Crypto/Crypto.cpp )
-file(GLOB HTTP_CLIENT ${HOME_ROOT}/cscore-common/Wasm/Modules/HttpClient/http-client.cpp )
-
-add_library(kms_core_lib ${CORE_SRC} ${EXCHANGE_CLIENT} ${HTTP_CLIENT} ${SIGNATURE_GENERATOR})
-target_link_libraries( kms_core_lib mongoose_lib)
-
-add_executable(testdns.wasm testdns.cpp )
-target_link_libraries(testdns.wasm PRIVATE kms_core_lib)
+add_executable(testdns.wasm 
+    testdns.cpp 
+    ${CORE_SRC}
+    ${EXCHANGE_CLIENT}
+    ${HTTP_CLIENT}
+    ${SIGNATURE_GENERATOR}
+    ${CMAKE_SOURCE_DIR}/mongoose.c
+    ${WAMR_PATH}/core/iwasm/libraries/lib-socket/src/wasi/wasi_socket_ext.c
+    )
 
 
