@@ -18,6 +18,7 @@
 // SPDX-License-Identifier: GPL-2.0-only or commercial
 
 #include "mongoose.h"
+#include <iostream>
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/base64.c"
@@ -2388,6 +2389,7 @@ size_t mg_iobuf_add(struct mg_iobuf *io, size_t ofs, const void *buf,
   if (buf != NULL) memmove(io->buf + ofs, buf, len);
   if (ofs > io->len) io->len += ofs - io->len;
   io->len += len;
+  std::cerr<<"Len Is "<<len<<"\n";
   return len;
 }
 
@@ -4080,11 +4082,15 @@ static void iolog(struct mg_connection *c, char *buf, long n, bool r) {
 }
 
 long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
+    std::cerr<<"heyehye\n\n";
   long n;
   if (c->is_udp) {
     union usa usa;
     socklen_t slen = tousa(&c->rem, &usa);
+        std::cerr<<"uhuhuhuh "<<errno<<" len - "<<len<<"\n\n";
+
     n = sendto(FD(c), (char *) buf, len, 0, &usa.sa, slen);
+    std::cerr<<"uhuhuhuh "<<errno<<"\n\n";
     if (n > 0) setlocaddr(FD(c), &c->loc);
   } else {
     n = send(FD(c), (char *) buf, len, MSG_NONBLOCKING);
@@ -4101,6 +4107,7 @@ long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
 bool mg_send(struct mg_connection *c, const void *buf, size_t len) {
   if (c->is_udp) {
     long n = mg_io_send(c, buf, len);
+    std::cerr<<"n is: "<<n<<"\n\n";
     MG_DEBUG(("%lu %p %d:%d %ld err %d", c->id, c->fd, (int) c->send.len,
               (int) c->recv.len, n, MG_SOCK_ERRNO));
     iolog(c, (char *) buf, n, false);
@@ -5438,7 +5445,7 @@ void mg_tls_init(struct mg_connection *c, const struct mg_tls_opts *opts) {
   }
 
   // Disable the verification of the certificates, for debugging purpose only
-  wolfSSL_CTX_set_verify(tls->ctx, WOLFSSL_VERIFY_NONE, 0);
+  // wolfSSL_CTX_set_verify(tls->ctx, WOLFSSL_VERIFY_NONE, 0);
 
   if (opts->ca != NULL && opts->ca[0] != '\0') {
     wolfSSL_CTX_set_verify(tls->ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
@@ -7055,17 +7062,22 @@ static void settmout(struct mg_connection *c, uint8_t type) {
 }
 
 long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
+      std::cerr<<"heyehye\n\n";
+
   struct mip_if *ifp = (struct mip_if *) c->mgr->priv;
   struct connstate *s = (struct connstate *) (c + 1);
   size_t max_headers_len = 14 + 24 /* max IP */ + 60 /* max TCP */;
   if (len + max_headers_len > ifp->tx.len) len = ifp->tx.len - max_headers_len;
   if (tx_tcp(ifp, c->rem.ip, TH_PUSH | TH_ACK, c->loc.port, c->rem.port,
              mg_htonl(s->seq), mg_htonl(s->ack), buf, len) > 0) {
+    std::cerr<<"ecco 2 "<<len<<"\n\n";
     s->seq += (uint32_t) len;
     if (s->ttype == MIP_TTYPE_KEEPALIVE) settmout(c, MIP_TTYPE_KEEPALIVE);
   } else {
+    std::cerr<<"ecco MG_IO_ERR\n\n";
     return MG_IO_ERR;
   }
+  
   return (long) len;
 }
 
