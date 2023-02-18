@@ -15,45 +15,14 @@
 #include <map>
 #include <string>
 
-#ifndef WOLSSL_SHA512
-    #define WOLSSL_SHA512
-#endif
 
-#define HAVE_SNI
 
-#if MG_ENABLE_WOLFSSL != 1
-error
-#endif
-#ifndef WOLFSSL_WASM
-error
-#endif
-
-// The very first web page in history. You can replace it from command line
-static const char *s_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=btc";
+constexpr const char *s_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=eth";
 //static const char *s_url = "https://google.com";
 
 static const char *s_post_data = NULL;      // POST data
 static const uint64_t s_timeout_ms = 1500;  // Connect timeout in milliseconds
                                             
-
-extern "C"
-{
-int32_t process_input();
-int32_t process_output(const char*);
-}
-
-
-std::map<std::string, std::string> PARAMS;
-
-
-[[clang::export_name("set_parameter")]]
-void set_parameter(const char* key, int32_t key_size, const char* value, int32_t value_size)
-{
-    printf("set_parameter: %s | %s\n", key, value);
-    PARAMS[key] = value;
-    printf("value: %s\n", PARAMS[key].c_str());
-}
-
 
 // Print HTTP response and signal that we're done
 static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
@@ -91,7 +60,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     struct mg_http_message *hm = (struct mg_http_message *) ev_data;
     printf("%.*s", (int) hm->body.len, hm->body.ptr);
     std::string response(hm->body.ptr, hm->body.len);
-    process_output(response.c_str());
+    //process_output(response.c_str());
     c->is_closing = 1;         // Tell mongoose to close this connection
     *(bool *) fn_data = true;  // Tell event loop to stop
   } else if (ev == MG_EV_ERROR) {
@@ -101,25 +70,23 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
 [[clang::export_name("entry")]]
 int entry() {
-  const char *log_level = getenv("LOG_LEVEL");  // Allow user to set log level
-  if (log_level == NULL) log_level = "4";       // Default is verbose
+  //const char *log_level = getenv("LOG_LEVEL");  // Allow user to set log level
+  //if (log_level == NULL) log_level = "4";       // Default is verbose
 
   struct mg_mgr mgr;              // Event manager
   bool done = false;              // Event handler flips it to true
 
-  mg_log_set(atoi(log_level));    // Set to 0 to disable debug
+  mg_log_set(MG_LL_DEBUG);    // Set to 0 to disable debug
   mg_mgr_init(&mgr);              // Initialise event manager  
-                                  //
 
-  std::string url  = s_url;
-  if (!PARAMS["url"].empty()) {
-    url = PARAMS["url"].c_str();
-  }
-  s_url = url.c_str();
-  printf("url: %s\n", url.c_str());
-  printf("url size: %d\n", url.size());
   mg_http_connect(&mgr, s_url, fn, &done);  // Create client connection
-  while (!done) mg_mgr_poll(&mgr, 50);      // Event manager loops until 'done'
+  printf("prepare polling\n");
+  while (!done) 
+  {
+      printf("poll!\n");
+      mg_mgr_poll(&mgr, 500); 
+      //usleep(1000*500);
+  }
   mg_mgr_free(&mgr);                        // Free resources
   return 0;
 }
