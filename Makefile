@@ -24,11 +24,12 @@ CFLAGS ?= $(OPTS) $(ASAN) $(COMMON_CFLAGS)
 
 #ifeq "$(SSL)" "WOLFSSL"
 WOLFSSL ?= /opt/wolfssl
-CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include -DMG_ARCH=MG_ARCH_WASM -DMG_IO_SIZE=8192 -DMG_MAX_RECV_SIZE=8*1024*1024
-#CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include 
+#CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include -DMG_ARCH=MG_ARCH_WASM -DMG_IO_SIZE=8192 -DMG_MAX_RECV_SIZE=8*1024*1024
+#CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include -DMG_IO_SIZE=8192 -DMG_MAX_RECV_SIZE=8*1024*1024
+CFLAGS  += -DMG_ENABLE_WOLFSSL=1 -I$(WOLFSSL)/include 
 LDFLAGS ?= -L$(WOLFSSL)/lib -lwolfssl
 #ifdef MG_ENABLE_WOLFSSL_DEBUG
-CFLAGS += -DMG_ENABLE_WOLFSSL_DEBUG
+CFLAGS += -DMG_ENABLE_WOLFSSL_DEBUG 
 #endif
 #endif
 
@@ -38,7 +39,7 @@ CFLAGS += -DMG_ENABLE_WOLFSSL_DEBUG
 wasm: WASI_SDK_PATH ?= /opt/wasi-sdk
 wasm: WAMR_PATH ?= /wasm-micro-runtime
 #wasm: ASAN= -fno-omit-frame-pointer -fno-common
-wasm: ASAN =
+wasm: ASAN =  -fsanitize=undefined,alignment -fno-sanitize-recover=all -fno-omit-frame-pointer -fno-common
 wasm: CFLAGS += -DWOLFSSL_WASM=1 -DWAMR_BUILD_SGX_IPFS=1 
 wasm: INCS += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
 wasm: WARN += -Wno-sign-conversion -Wno-unused-variable -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
@@ -58,7 +59,6 @@ wasm: Makefile mongoose.h $(SRCS)
 		-Wl,--export=malloc -Wl,--export=free \
  		-Wl,--export=__heap_base -Wl,--export=__data_end \
 		-z stack-size=8388608 \
-		-Wl,--initial-memory=67108864 \
 		--sysroot=$(WASI_SDK_PATH)/share/wasi-sysroot/ \
 		-Wl,--allow-undefined \
 		-Wl,--allow-undefined-file=$(WASI_SDK_PATH)/share/wasi-sysroot/share/wasm32-wasi/defined-symbols.txt \

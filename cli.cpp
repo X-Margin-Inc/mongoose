@@ -7,6 +7,7 @@
 //
 // To enable SSL/TLS, make SSL=OPENSSL or make SSL=MBEDTLS
 
+#define HAVE_SNI
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/settings.h>
@@ -17,10 +18,10 @@
 
 
 
-constexpr const char *s_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=eth";
+//constexpr const char *s_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=eth";
+//constexpr const char * s_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
 //static const char *s_url = "https://google.com";
-
-static const char *s_post_data = NULL;      // POST data
+static const char* s_url = "https://api.coingecko.com";
 static const uint64_t s_timeout_ms = 1500;  // Connect timeout in milliseconds
                                             
 
@@ -45,25 +46,21 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     }
 
     // Send request
-    int content_length = s_post_data ? strlen(s_post_data) : 0;
-    mg_printf(c,
-              "%s %s HTTP/1.0\r\n"
-              "Host: %.*s\r\n"
-              "Content-Type: octet-stream\r\n"
-              "Content-Length: %d\r\n"
-              "\r\n",
-              s_post_data ? "POST" : "GET", mg_url_uri(s_url), (int) host.len,
-              host.ptr, content_length);
-    mg_send(c, s_post_data, content_length);
+    //int content_length = s_post_data ? strlen(s_post_data) : 0;
+    mg_printf(c,"GET /api/v3/coins/markets?vs_currency=eth HTTP/1.1\r\n"
+                "Host: api.coingecko.com\r\n\r\n");
+    
   } else if (ev == MG_EV_HTTP_MSG) {
     // Response is received. Print it
     struct mg_http_message *hm = (struct mg_http_message *) ev_data;
-    printf("%.*s", (int) hm->body.len, hm->body.ptr);
+    //printf("%.*s", (int) hm->body.len, hm->body.ptr);
     std::string response(hm->body.ptr, hm->body.len);
+    printf("##RESPONSE: %s\n", response.c_str());
     //process_output(response.c_str());
     c->is_closing = 1;         // Tell mongoose to close this connection
     *(bool *) fn_data = true;  // Tell event loop to stop
   } else if (ev == MG_EV_ERROR) {
+      printf("Error...\n");
     *(bool *) fn_data = true;  // Error, tell event loop to stop
   }
 }
