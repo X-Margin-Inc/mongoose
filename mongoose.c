@@ -2226,12 +2226,16 @@ static void deliver_chunked_chunks(struct mg_connection *c, size_t hlen,
   //  |      hlen        |           chunk1         | ......
   char *buf = (char *) &c->recv.buf[hlen], *p = buf;
   size_t len = c->recv.len - hlen;
+    fprintf( stderr, "LEN: %zu", len);
   size_t processed = ((size_t) c->pfn_data) & ~MG_DMARK;
+    fprintf( stderr, "PROCESSED: %zu", processed);
   size_t mark, pl, dl, del = 0, ofs = 0;
   bool last = false;
   if (processed <= len) len -= processed, buf += processed;
   while (!last && getchunk(mg_str_n(buf + ofs, len - ofs), &pl, &dl)) {
     size_t saved = c->recv.len;
+      fprintf( stderr, "SAVED: %zu", saved);
+      fprintf( stderr, "DL: %zu", dl);
     memmove(p + processed, buf + ofs + pl, dl);
     // MG_INFO(("P2 [%.*s]", (int) (processed + dl), p));
     hm->chunk = mg_str_n(p + processed, dl);
@@ -2244,6 +2248,7 @@ static void deliver_chunked_chunks(struct mg_connection *c, size_t hlen,
   }
   mg_iobuf_del(&c->recv, hlen + processed, del);
   mark = ((size_t) c->pfn_data) & MG_DMARK;
+    fprintf( stderr, "MARK: %zu", mark);
   c->pfn_data = (void *) (processed | mark);
   if (last) {
     hm->body.len = processed;
@@ -2280,24 +2285,28 @@ static void deliver_normal_chunks(struct mg_connection *c, size_t hlen,
 }
 
 static void http_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
-    fprintf( stderr, "CALLBACK:\n");
+    fprintf( stderr, "CALLBACK:\n%.*s\n\n", (int) c->recv.len, c->recv.buf);
   if (ev == MG_EV_READ || ev == MG_EV_CLOSE) {
     struct mg_http_message hm;
     // mg_hexdump(c->recv.buf, c->recv.len);
     while (c->recv.buf != NULL && c->recv.len > 0) {
       bool next = false;
       int hlen = mg_http_parse((char *) c->recv.buf, c->recv.len, &hm);
+        fprintf( stderr, "HLEN: %d", hlen);
       if (hlen < 0) {
         mg_error(c, "HTTP parse:\n%.*s", (int) c->recv.len, c->recv.buf);
         break;
       }
-      if (c->is_resp) break;           // Response is still generated
+      if (c->is_resp) {
+          fprintf(stderr, "is resp: true");
+          break;           // Response is still generated
+      }
+        fprintf( stderr, "is resp: false");
       if (hlen == 0) break;            // Request is not buffered yet
       if (ev == MG_EV_CLOSE) {         // If client did not set Content-Length
         hm.message.len = c->recv.len;  // and closes now, deliver a MSG
         hm.body.len = hm.message.len - (size_t) (hm.body.ptr - hm.message.ptr);
       }
-        fprintf( stderr, "CALLBACK:\n%.*s", (int) c->recv.len, c->recv.buf);
       if (mg_is_chunked(&hm)) {
           fprintf( stderr, "CHUNKED");
         deliver_chunked_chunks(c, (size_t) hlen, &hm, &next);
