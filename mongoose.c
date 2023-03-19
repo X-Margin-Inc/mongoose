@@ -2280,7 +2280,7 @@ static void deliver_normal_chunks(struct mg_connection *c, size_t hlen,
 }
 
 static void http_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
-    fprintf( stderr, "CALLBACK:\n%.*s");
+    fprintf( stderr, "CALLBACK:\n");
   if (ev == MG_EV_READ || ev == MG_EV_CLOSE) {
     struct mg_http_message hm;
     // mg_hexdump(c->recv.buf, c->recv.len);
