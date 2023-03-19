@@ -2296,9 +2296,12 @@ static void http_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
         hm.message.len = c->recv.len;  // and closes now, deliver a MSG
         hm.body.len = hm.message.len - (size_t) (hm.body.ptr - hm.message.ptr);
       }
+        mg_error(c, "CALLBACK:\n%.*s", (int) c->recv.len, c->recv.buf);
       if (mg_is_chunked(&hm)) {
+          mg_error(c, "IS CHUNKED:\n%.*s", (int) c->recv.len, c->recv.buf);
         deliver_chunked_chunks(c, (size_t) hlen, &hm, &next);
       } else {
+          mg_error(c, "NOT CHUNKED:\n%.*s", (int) c->recv.len, c->recv.buf);
         deliver_normal_chunks(c, (size_t) hlen, &hm, &next);
       }
       if (next) continue;  // Chunks & request were deleted
