@@ -2724,7 +2724,7 @@ long mg_json_get_long(struct mg_str json, const char *path, long dflt) {
 
 
 static void default_logger(char c, void *param) {
-  // putchar(c);
+  putchar(c);
   (void) c, (void) param;
 }
 
