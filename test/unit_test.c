@@ -319,7 +319,9 @@ static void test_sntp_server(const char *url) {
   ASSERT(c->is_udp == 1);
   for (i = 0; i < 60 && ms == 0; i++) mg_mgr_poll(&mgr, 50);
   MG_DEBUG(("server: %s, ms: %lld", url ? url : "(default)", ms));
+#if !defined(NO_SNTP_CHECK)
   ASSERT(ms > 0);
+#endif
   mg_mgr_free(&mgr);
 }
 
@@ -331,15 +333,16 @@ static void test_sntp(void) {
 
   ASSERT(mg_sntp_parse(bad, sizeof(bad)) < 0);
   ASSERT(mg_sntp_parse(NULL, 0) == -1);
-  test_sntp_server("udp://time.windows.com:123");
   // NOTE(cpq): temporarily disabled until Github Actions fix their NTP
   // port blockage issue, https://github.com/actions/runner-images/issues/5615
   // test_sntp_server("udp://time.apple.com:123");
-  // test_sntp_server(NULL);
+  test_sntp_server("udp://time.windows.com:123");
+  test_sntp_server(NULL);
 }
 
 struct mqtt_data {
   char *buf;
+  size_t bufsize;
   int subscribed;
   int published;
 };
@@ -347,6 +350,7 @@ struct mqtt_data {
 static void mqtt_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
   struct mqtt_data *test_data = (struct mqtt_data *) fnd;
   char *buf = test_data->buf;
+
   if (ev == MG_EV_MQTT_OPEN) {
     buf[0] = *(int *) evd == 0 ? 'X' : 'Y';
   } else if (ev == MG_EV_MQTT_CMD) {
@@ -359,19 +363,87 @@ static void mqtt_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
     }
   } else if (ev == MG_EV_MQTT_MSG) {
     struct mg_mqtt_message *mm = (struct mg_mqtt_message *) evd;
-    sprintf(buf + 1, "%.*s/%.*s", (int) mm->topic.len, mm->topic.ptr,
-            (int) mm->data.len, mm->data.ptr);
+    snprintf(buf + 1, test_data->bufsize, "%.*s/%.*s", (int) mm->topic.len,
+             mm->topic.ptr, (int) mm->data.len, mm->data.ptr);
+
+    if (mm->cmd == MQTT_CMD_PUBLISH && c->is_mqtt5) {
+      size_t pos = 0;
+      struct mg_mqtt_prop prop;
+
+      // note: the server will send the properties sorted by their ID
+      ASSERT((pos = mg_mqtt_next_prop(mm, &prop, pos)) > 0);
+      ASSERT(prop.iv == 10 && prop.id == MQTT_PROP_MESSAGE_EXPIRY_INTERVAL);
+
+      ASSERT((pos = mg_mqtt_next_prop(mm, &prop, pos)) > 0);
+      ASSERT(prop.id == MQTT_PROP_CONTENT_TYPE);
+      ASSERT(strncmp(prop.val.ptr, "test_content_val_2", prop.val.len) == 0 &&
+             prop.val.len == strlen("test_content_val_2"));
+
+      ASSERT((pos = mg_mqtt_next_prop(mm, &prop, pos)) > 0);
+      ASSERT(prop.id == MQTT_PROP_USER_PROPERTY);
+      ASSERT(strncmp(prop.key.ptr, "test_key_1", prop.key.len) == 0 &&
+             prop.key.len == strlen("test_key_1"));
+      ASSERT(strncmp(prop.val.ptr, "test_value_1", prop.val.len) == 0 &&
+             prop.val.len == strlen("test_value_1"));
+
+      ASSERT((pos = mg_mqtt_next_prop(mm, &prop, pos)) > 0);
+      ASSERT(prop.id == MQTT_PROP_USER_PROPERTY);
+      ASSERT(strncmp(prop.key.ptr, "test_key_2", prop.key.len) == 0 &&
+             prop.key.len == strlen("test_key_2"));
+      ASSERT(strncmp(prop.val.ptr, "test_value_2", prop.val.len) == 0 &&
+             prop.val.len == strlen("test_value_2"));
+
+      ASSERT((pos = mg_mqtt_next_prop(mm, &prop, pos)) == 0);
+    }
   }
   (void) c;
 }
 
+static void construct_props(struct mg_mqtt_prop *props) {
+  props[0].id = MQTT_PROP_MESSAGE_EXPIRY_INTERVAL;
+  props[0].iv = 10;
+
+  props[1].id = MQTT_PROP_USER_PROPERTY;
+  props[1].key = mg_str("test_key_1");
+  props[1].val = mg_str("test_value_1");
+
+  props[2].id = MQTT_PROP_USER_PROPERTY;
+  props[2].key = mg_str("test_key_2");
+  props[2].val = mg_str("test_value_2");
+
+  props[3].id = MQTT_PROP_CONTENT_TYPE;
+  props[3].val = mg_str("test_content_val_2");
+}
+
+static void test_mqtt_base(void);
+static void test_mqtt_base(void) {
+  char buf[50] = {0};
+  struct mqtt_data test_data = {buf, 50, 0, 0};
+  struct mg_mgr mgr;
+  struct mg_connection *c;
+  const char *url = "mqtt://broker.hivemq.com:1883";
+  int i;
+  mg_mgr_init(&mgr);
+
+  // Ping the client
+  c = mg_mqtt_connect(&mgr, url, NULL, mqtt_cb, &test_data);
+  mg_mqtt_ping(c);
+  for (i = 0; i < 300 && !(c->is_client && !c->is_connecting); i++)
+    mg_mgr_poll(&mgr, 10);
+  ASSERT(c->is_client && !c->is_connecting);
+
+  mg_mgr_free(&mgr);
+  ASSERT(mgr.conns == NULL);
+}
+
 static void test_mqtt_ver(uint8_t mqtt_version) {
   char buf[50] = {0}, client_id[16], will_topic[16];
-  struct mqtt_data test_data = {buf, 0, 0};
+  struct mqtt_data test_data = {buf, 50, 0, 0};
   struct mg_mgr mgr;
   struct mg_str topic = mg_str("x/f12"), data = mg_str("hi");
   struct mg_connection *c;
   struct mg_mqtt_opts opts;
+  struct mg_mqtt_prop properties[4];
   const char *url = "mqtt://broker.hivemq.com:1883";
   int i;
   mg_mgr_init(&mgr);
@@ -382,11 +454,15 @@ static void test_mqtt_ver(uint8_t mqtt_version) {
   if (buf[0] != 'X') MG_INFO(("[%s]", buf));
   ASSERT(buf[0] == 'X');
   ASSERT(test_data.subscribed == 0);
-  mg_mqtt_sub(c, topic, 1);
+
+  opts.topic = topic, opts.qos = 1;
+  mg_mqtt_sub(c, &opts);
   for (i = 0; i < 500 && test_data.subscribed == 0; i++) mg_mgr_poll(&mgr, 10);
   ASSERT(test_data.subscribed == 1);
   ASSERT(test_data.published == 0);
-  mg_mqtt_pub(c, topic, data, 1, false);
+
+  opts.topic = topic, opts.message = data, opts.qos = 1, opts.retain = false;
+  mg_mqtt_pub(c, &opts);
   for (i = 0; i < 500 && test_data.published == 0; i++) mg_mgr_poll(&mgr, 10);
   ASSERT(test_data.published == 1);
   for (i = 0; i < 500 && buf[1] == 0; i++) mg_mgr_poll(&mgr, 10);
@@ -398,24 +474,32 @@ static void test_mqtt_ver(uint8_t mqtt_version) {
   test_data.published = 0;
   memset(buf, 0, sizeof(buf));
   memset(&opts, 0, sizeof(opts));
-  opts.clean = true;
-  opts.will_qos = 1;
-  opts.will_retain = true;
-  opts.keepalive = 20;
+
+  opts.clean = true, opts.qos = 1, opts.retain = true, opts.keepalive = 20;
   opts.version = mqtt_version;
-  opts.will_topic = mg_str(mg_random_str(will_topic, sizeof(will_topic)));
-  opts.will_message = mg_str("mg_will_messsage");
+  opts.topic = mg_str(mg_random_str(will_topic, sizeof(will_topic)));
+  opts.message = mg_str("mg_will_messsage");
   opts.client_id = mg_str(mg_random_str(client_id, sizeof(client_id)));
   c = mg_mqtt_connect(&mgr, url, &opts, mqtt_cb, &test_data);
   for (i = 0; i < 300 && buf[0] == 0; i++) mg_mgr_poll(&mgr, 10);
   if (buf[0] != 'X') MG_INFO(("[%s]", buf));
   ASSERT(buf[0] == 'X');
   ASSERT(test_data.subscribed == 0);
-  mg_mqtt_sub(c, topic, 1);
+
+  opts.topic = topic, opts.qos = 1;
+  mg_mqtt_sub(c, &opts);
   for (i = 0; i < 500 && test_data.subscribed == 0; i++) mg_mgr_poll(&mgr, 10);
   ASSERT(test_data.subscribed == 1);
   ASSERT(test_data.published == 0);
-  mg_mqtt_pub(c, topic, data, 1, false);
+
+  opts.topic = topic, opts.message = data, opts.qos = 1, opts.retain = false;
+  if (mqtt_version == 5) {
+    opts.props = properties;
+    opts.num_props = 4;
+    construct_props(properties);
+  }
+
+  mg_mqtt_pub(c, &opts);
   for (i = 0; i < 500 && test_data.published == 0; i++) mg_mgr_poll(&mgr, 10);
   ASSERT(test_data.published == 1);
   for (i = 0; i < 500 && buf[1] == 0; i++) mg_mgr_poll(&mgr, 10);
@@ -427,8 +511,10 @@ static void test_mqtt_ver(uint8_t mqtt_version) {
 }
 
 static void test_mqtt(void) {
-  test_mqtt_ver(5);
+  test_mqtt_base();
   test_mqtt_ver(4);
+  test_mqtt_ver(5);
+  test_mqtt_base();
 }
 
 static void eh1(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
@@ -550,9 +636,16 @@ static int fetch(struct mg_mgr *mgr, char *buf, const char *url,
   return fd.code;
 }
 
-static int cmpbody(const char *buf, const char *str) {
+static struct mg_http_message gethm(const char *buf) {
   struct mg_http_message hm;
+  memset(&hm, 0, sizeof(hm));
+  mg_http_parse(buf, strlen(buf), &hm);
+  return hm;
+}
+
+static int cmpbody(const char *buf, const char *str) {
   struct mg_str s = mg_str(str);
+  struct mg_http_message hm = gethm(buf);
   size_t len = strlen(buf);
   mg_http_parse(buf, len, &hm);
   if (hm.body.len > len) hm.body.len = len - (size_t) (hm.body.ptr - buf);
@@ -560,11 +653,8 @@ static int cmpbody(const char *buf, const char *str) {
 }
 
 static bool cmpheader(const char *buf, const char *name, const char *value) {
-  struct mg_http_message hm;
-  struct mg_str *h;
-  size_t len = strlen(buf);
-  mg_http_parse(buf, len, &hm);
-  h = mg_http_get_header(&hm, name);
+  struct mg_http_message hm = gethm(buf);
+  struct mg_str *h = mg_http_get_header(&hm, name);
   return h != NULL && mg_strcmp(*h, mg_str(value)) == 0;
 }
 
@@ -680,13 +770,39 @@ static void test_http_server(void) {
   ASSERT(fetch(&mgr, buf, url, "GET /dredir/ HTTP/1.0\n\n") == 200);
   ASSERT(cmpbody(buf, "hi\n") == 0);
 
-  ASSERT(fetch(&mgr, buf, url, "GET /dredirgz/ HTTP/1.0\n\n") == 200);
+  ASSERT(fetch(&mgr, buf, url,
+               "GET /dredirgz/ HTTP/1.0\n"
+               "Accept-Encoding: gzip\n\n") == 200);
   ASSERT(cmpheader(buf, "Content-Type", "text/html; charset=utf-8"));
   ASSERT(cmpheader(buf, "Content-Encoding", "gzip"));
+
+  ASSERT(fetch(&mgr, buf, url, "GET /gzip.txt HTTP/1.0\n\n") == 200);
+  ASSERT(cmpbody(buf, "hi\n") == 0);
+  ASSERT(gethm(buf).body.len == 3);
+  ASSERT(cmpheader(buf, "Content-Encoding", "gzip") == false);
+
+  ASSERT(fetch(&mgr, buf, url,
+               "GET /gzip.txt HTTP/1.0\n"
+               "Accept-Encoding: foo,gzip\n\n") == 200);
+  mg_hexdump(buf, strlen(buf));
+  ASSERT(cmpheader(buf, "Content-Encoding", "gzip") == true);
+  ASSERT(gethm(buf).body.len == 23);
 
   ASSERT(fetch(&mgr, buf, url, "GET /..ddot HTTP/1.0\n\n") == 301);
   ASSERT(fetch(&mgr, buf, url, "GET /..ddot/ HTTP/1.0\n\n") == 200);
   ASSERT(cmpbody(buf, "hi\n") == 0);
+  ASSERT(fetch(&mgr, buf, url,
+               "GET /a.txt HTTP/1.0\n"
+               "Content-Length: -123\n\n") == 0);
+  ASSERT(fetch(&mgr, buf, url,
+               "POST /a.txt HTTP/1.0\n"
+               "Content-Length: -123\n\n") == 0);
+  ASSERT(fetch(&mgr, buf, url,
+               "GET /a.txt HTTP/1.0\n"
+               "Content-Length: 19000000000000000000\n\n") == 0);
+  ASSERT(fetch(&mgr, buf, url,
+               "POST /a.txt HTTP/1.0\n"
+               "Content-Length: 19000000000000000000\n\n") == 0);
 
   {
     extern char *mg_http_etag(char *, size_t, size_t, time_t);
@@ -852,7 +968,9 @@ static void test_http_server(void) {
   // Pre-compressed files
   {
     struct mg_http_message hm;
-    ASSERT(fetch(&mgr, buf, url, "HEAD /hello.txt HTTP/1.0\n\n") == 200);
+    ASSERT(fetch(&mgr, buf, url,
+                 "HEAD /hello.txt HTTP/1.0\n"
+                 "Accept-Encoding: gzip\n\n") == 200);
     mg_http_parse(buf, strlen(buf), &hm);
     ASSERT(mg_http_get_header(&hm, "Content-Encoding") != NULL);
     ASSERT(mg_strcmp(*mg_http_get_header(&hm, "Content-Encoding"),
@@ -1000,6 +1118,18 @@ static void test_http_client(void) {
     mg_tls_init(c, &opts);
     for (i = 0; i < 500 && ok <= 0; i++) mg_mgr_poll(&mgr, 10);
     ASSERT(ok == 777);
+    mg_mgr_poll(&mgr, 1);
+
+    // Test host validation only (no CA, no cert)
+    ok = 0;
+    opts.srvname = host;
+    opts.ca = NULL;
+    c = mg_http_connect(&mgr, url, f3, &ok);
+    ASSERT(c != NULL);
+    mg_tls_init(c, &opts);
+    for (i = 0; i < 1500 && ok <= 0; i++) mg_mgr_poll(&mgr, 10);
+    ASSERT(ok == 200);
+    c->is_closing = 1;
     mg_mgr_poll(&mgr, 1);
   }
 #endif
@@ -1438,6 +1568,14 @@ static void test_str(void) {
     free((void *) s.ptr);
   }
 
+  {
+    const char *s;
+    struct mg_str a = mg_str("hello"), b = mg_str("a"), c = mg_str(NULL);
+    ASSERT((s = mg_strstr(a, b)) == NULL);
+    ASSERT((s = mg_strstr(a, c)) != NULL);
+    ASSERT(s == a.ptr);
+  }
+
   ASSERT(mg_strcmp(mg_str(""), mg_str(NULL)) == 0);
   ASSERT(mg_strcmp(mg_str("a"), mg_str("b")) < 0);
   ASSERT(mg_strcmp(mg_str("b"), mg_str("a")) > 0);
@@ -1510,7 +1648,7 @@ static void test_str(void) {
     const char *expected;
 
     expected = "\"\"";
-    mg_snprintf(buf, sizeof(buf), "%Q", "");
+    mg_snprintf(buf, sizeof(buf), "%m", mg_print_esc, 0, "");
     ASSERT(strcmp(buf, expected) == 0);
 
     expected = "";
@@ -1522,20 +1660,20 @@ static void test_str(void) {
     ASSERT(strcmp(buf, expected) == 0);
 
     expected = "\"hi, \\\"\"";
-    mg_snprintf(buf, sizeof(buf), "\"hi, %q\"", "\"");
+    mg_snprintf(buf, sizeof(buf), "\"hi, %M\"", mg_print_esc, 0, "\"");
     MG_INFO(("[%s] [%s]", buf, expected));
     ASSERT(strcmp(buf, expected) == 0);
 
     expected = "\"a'b\"";
-    mg_snprintf(buf, sizeof(buf), "%Q", "a'b");
+    mg_snprintf(buf, sizeof(buf), "%m", mg_print_esc, 0, "a'b");
     ASSERT(strcmp(buf, expected) == 0);
 
     expected = "\"a\\b\\n\\f\\r\\t\\\"\"";
-    mg_snprintf(buf, sizeof(buf), "%Q", "a\b\n\f\r\t\"");
+    mg_snprintf(buf, sizeof(buf), "%m", mg_print_esc, 0, "a\b\n\f\r\t\"");
     ASSERT(strcmp(buf, expected) == 0);
 
     expected = "\"abc\"";
-    mg_snprintf(buf, sizeof(buf), "%.*Q", 3, "abcdef");
+    mg_snprintf(buf, sizeof(buf), "%m", mg_print_esc, 3, "abcdef");
     ASSERT(strcmp(buf, expected) == 0);
 
     p = mg_mprintf("[%s,%M,%s]", "null", pf1, 2, 3, "hi");
@@ -1554,15 +1692,22 @@ static void test_str(void) {
   }
 
   {
-    char tmp[40];
+#if MG_ARCH == MG_ARCH_WIN32
+    bool is_windows = true;
+#else
+    bool is_windows = false;
+#endif
+
 #define DBLWIDTH(a, b) a, b
-#define TESTDOUBLE(fmt_, num_, res_)                                          \
-  do {                                                                        \
-    const char *N = #num_;                                                    \
-    size_t n = mg_snprintf(tmp, sizeof(tmp), fmt_, num_);                     \
-    if (0) printf("[%s] [%s] -> [%s] [%.*s]\n", fmt_, N, res_, (int) n, tmp); \
-    ASSERT(n == strlen(res_));                                                \
-    ASSERT(strcmp(tmp, res_) == 0);                                           \
+#define TESTDOUBLE(fmt_, num_, res_)                             \
+  do {                                                           \
+    char t1[40] = "", t2[40] = "";                               \
+    const char *N = #num_;                                       \
+    mg_snprintf(t1, sizeof(t1), fmt_, num_);                     \
+    snprintf(t2, sizeof(t2), fmt_, num_);                        \
+    printf("[%s,%s] : [%s] [%s] [%s]\n", fmt_, N, res_, t2, t1); \
+    ASSERT(strcmp(t1, res_) == 0);                               \
+    if (!is_windows) ASSERT(strcmp(t1, t2) == 0);                \
   } while (0)
 
     TESTDOUBLE("%g", 0.0, "0");
@@ -1602,6 +1747,15 @@ static void test_str(void) {
     TESTDOUBLE("%g", -600.1234, "-600.123");
     TESTDOUBLE("%g", 599.1234, "599.123");
     TESTDOUBLE("%g", -599.1234, "-599.123");
+    TESTDOUBLE("%g", 0.14, "0.14");
+    TESTDOUBLE("%f", 0.14, "0.140000");
+    TESTDOUBLE("%.*f", DBLWIDTH(4, 0.14), "0.1400");
+    TESTDOUBLE("%.*f", DBLWIDTH(3, 0.14), "0.140");
+    TESTDOUBLE("%.*f", DBLWIDTH(2, 0.14), "0.14");
+    TESTDOUBLE("%.*f", DBLWIDTH(1, 0.14), "0.1");
+    TESTDOUBLE("%.*f", DBLWIDTH(1, 0.19), "0.2");
+    TESTDOUBLE("%.*f", DBLWIDTH(1, 0.16), "0.2");
+    // TESTDOUBLE("%.*f", DBLWIDTH(1, 0.15), "0.1");
 
 #ifndef _WIN32
     TESTDOUBLE("%g", (double) INFINITY, "inf");
@@ -1616,15 +1770,16 @@ static void test_str(void) {
   {
     const char *expected = "[\"MA==\",\"MAo=\",\"MAr+\",\"MAr+Zw==\"]";
     char tmp[100], s[] = "0\n\xfeg";
-    ASSERT(mg_snprintf(tmp, sizeof(tmp), "[%V,%V,%V,%V]", 1, s, 2, s, 3, s, 4,
-                       s) == 33);
+    ASSERT(mg_snprintf(tmp, sizeof(tmp), "[%m,%m,%m,%m]", mg_print_base64, 1, s,
+                       mg_print_base64, 2, s, mg_print_base64, 3, s,
+                       mg_print_base64, 4, s) == 33);
     ASSERT(strcmp(tmp, expected) == 0);
   }
 
   {
     const char *expected = "\"002001200220616263\"";
     char tmp[100], s[] = "\x00 \x01 \x02 abc";
-    ASSERT(mg_snprintf(tmp, sizeof(tmp), "%H", 9, s) == 20);
+    ASSERT(mg_snprintf(tmp, sizeof(tmp), "%m", mg_print_hex, 9, s) == 20);
     ASSERT(strcmp(tmp, expected) == 0);
   }
 
@@ -1634,28 +1789,46 @@ static void test_str(void) {
     ASSERT(strcmp(tmp, "01") == 0);
     ASSERT(tmp[2] == '\0');
   }
+
+  {
+    char buf[100];
+    struct mg_addr a = {mg_htons(3), mg_htonl(0x2000001), {1, 100, 33}, false};
+    ASSERT(mg_snprintf(buf, sizeof(buf), "%M %d", mg_print_ip, &a, 7) == 9);
+    ASSERT(strcmp(buf, "2.0.0.1 7") == 0);
+    ASSERT(mg_snprintf(buf, sizeof(buf), "%M %d", mg_print_ip_port, &a, 7) ==
+           11);
+    ASSERT(strcmp(buf, "2.0.0.1:3 7") == 0);
+    a.is_ip6 = true;
+    ASSERT(mg_snprintf(buf, sizeof(buf), "%M %d", mg_print_ip, &a, 7) == 24);
+    ASSERT(strcmp(buf, "[164:2100:0:0:0:0:0:0] 7") == 0);
+    ASSERT(mg_snprintf(buf, sizeof(buf), "%M %d", mg_print_ip_port, &a, 7) ==
+           26);
+    ASSERT(strcmp(buf, "[164:2100:0:0:0:0:0:0]:3 7") == 0);
+  }
 }
 
 static void fn1(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
-  if (ev == MG_EV_ERROR) sprintf((char *) fn_data, "%s", (char *) ev_data);
+  if (ev == MG_EV_ERROR)
+    *(char **) fn_data = mg_mprintf("%s", (char *) ev_data);
   (void) c;
 }
 
 static void test_dns_error(const char *dns_server_url, const char *errstr) {
   // Test timeout
   struct mg_mgr mgr;
-  char buf[100] = "";
+  char *buf = NULL;
   int i;
   mg_mgr_init(&mgr);
   mgr.dns4.url = dns_server_url;
   mgr.dnstimeout = 10;
   MG_DEBUG(("opening dummy DNS listener @ [%s]...", dns_server_url));
   mg_listen(&mgr, mgr.dns4.url, NULL, NULL);  // Just discard our queries
-  mg_http_connect(&mgr, "http://google.com", fn1, buf);
-  for (i = 0; i < 50 && buf[0] == '\0'; i++) mg_mgr_poll(&mgr, 1);
+  mg_http_connect(&mgr, "http://google.com", fn1, &buf);
+  for (i = 0; i < 50 && buf == NULL; i++) mg_mgr_poll(&mgr, 1);
   mg_mgr_free(&mgr);
   // MG_DEBUG(("buf: [%s] [%s]", buf, errstr));
-  ASSERT(strcmp(buf, errstr) == 0);
+  ASSERT(buf != NULL && strcmp(buf, errstr) == 0);
+  free(buf);
 }
 
 static void test_dns(void) {
@@ -1726,7 +1899,6 @@ static void test_util(void) {
   ASSERT(mg_aton(mg_str("127.0.0.1"), &a) == true);
   ASSERT(a.is_ip6 == false);
   ASSERT(a.ip == mg_htonl(0x7f000001));
-  ASSERT(strcmp(mg_ntoa(&a, buf, sizeof(buf)), "127.0.0.1") == 0);
 
   ASSERT(mg_aton(mg_str("1:2:3:4:5:6:7:8"), &a) == true);
   ASSERT(a.is_ip6 == true);
@@ -1799,14 +1971,19 @@ static void test_util(void) {
     free(s);
   }
 
-  ASSERT(mg_to64(mg_str("-9223372036854775809")) == 0);
-  ASSERT(mg_to64(mg_str("9223372036854775800")) == 0);
-  ASSERT(mg_to64(mg_str("9223372036854775700")) > 0);
-  ASSERT(mg_tou64(mg_str("0")) == 0);
-  ASSERT(mg_tou64(mg_str("123")) == 123);
-  ASSERT(mg_tou64(mg_str("")) == 0);
-  ASSERT(mg_tou64(mg_str("-")) == 0);
-  ASSERT(mg_tou64(mg_str("18446744073709551615")) == 18446744073709551615U);
+  {
+    extern bool mg_to_size_t(struct mg_str, size_t *);
+    size_t val = 1;
+    ASSERT(mg_to_size_t(mg_str("0"), &val) && val == 0);
+    ASSERT(mg_to_size_t(mg_str("123"), &val) && val == 123);
+    ASSERT(mg_to_size_t(mg_str(""), &val) && val == 0);
+    ASSERT(mg_to_size_t(mg_str("-"), &val) == false);
+    ASSERT(mg_to_size_t(mg_str("18446744073709551616"), &val) ==
+           false);  // range +1
+    ASSERT(mg_to_size_t(mg_str("18446744073709551610"), &val) == false);
+    // TODO(): ASSERT(mg_to_size_t(mg_str("18446744073709551609"), &val) &&
+    //         val == 18446744073709551609U);  // our max or SIZE_MAX
+  }
 
   {
     size_t i;
@@ -1903,19 +2080,19 @@ static void test_http_upload(void) {
 static void eX(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   if (ev == MG_EV_HTTP_MSG) {
     mg_printf(c, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
-    c->label[0] = 1;
+    c->data[0] = 1;
     c->is_hexdumping = 1;
-  } else if (ev == MG_EV_POLL && c->label[0] != 0) {
-    c->label[0]++;
-    if (c->label[0] == 10) mg_http_printf_chunk(c, "a");
-    if (c->label[0] == 20) {
+  } else if (ev == MG_EV_POLL && c->data[0] != 0) {
+    c->data[0]++;
+    if (c->data[0] == 10) mg_http_printf_chunk(c, "a");
+    if (c->data[0] == 20) {
       mg_http_printf_chunk(c, "b");
       mg_http_printf_chunk(c, "c");
     }
-    if (c->label[0] == 30) {
+    if (c->data[0] == 30) {
       mg_http_printf_chunk(c, "d");
       mg_http_printf_chunk(c, "");
-      c->label[0] = 0;
+      c->data[0] = 0;
     }
   }
   (void) ev_data, (void) fn_data;
@@ -1924,12 +2101,12 @@ static void eX(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 static void eY(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   if (ev == MG_EV_HTTP_MSG) {
     mg_printf(c, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
-    c->label[0] = 1;
-  } else if (ev == MG_EV_POLL && c->label[0] != 0) {
-    c->label[0]++;
-    if (c->label[0] == 10) mg_send(c, "a", 1);
-    if (c->label[0] == 12) mg_send(c, "bc", 2);
-    if (c->label[0] == 30) mg_send(c, "d", 1), c->is_resp = 0, c->label[0] = 0;
+    c->data[0] = 1;
+  } else if (ev == MG_EV_POLL && c->data[0] != 0) {
+    c->data[0]++;
+    if (c->data[0] == 10) mg_send(c, "a", 1);
+    if (c->data[0] == 12) mg_send(c, "bc", 2);
+    if (c->data[0] == 30) mg_send(c, "d", 1), c->is_resp = 0, c->data[0] = 0;
   }
   (void) ev_data, (void) fn_data;
 }
@@ -1972,10 +2149,12 @@ static void eh5(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
 
 static void test_http_chunked_case(mg_event_handler_t s, mg_event_handler_t c,
                                    int req_count, const char *expected) {
+  char url[100];
   struct mg_mgr mgr;
-  const char *url = "http://127.0.0.1:12344";
   uint32_t i, crc = 0, expected_crc = mg_crc32(0, expected, strlen(expected));
   struct mg_connection *conn;
+  static uint16_t port = 32344; // To prevent bind errors on Windows
+  mg_snprintf(url, sizeof(url), "http://127.0.0.1:%d", port++);
   mg_mgr_init(&mgr);
   mg_http_listen(&mgr, url, s, NULL);
   conn = mg_http_connect(&mgr, url, c, &crc);
@@ -2194,7 +2373,7 @@ static void eh6(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   (void) c, (void) ev_data;
 }
 
-#if defined(__arm__) || defined(__riscv)
+#if (MG_ENABLE_SOCKET == 0)
 int send(int sock, const void *buf, size_t len, int flags);
 int send(int sock, const void *buf, size_t len, int flags) {
   (void) sock, (void) buf, (void) len, (void) flags;
@@ -2265,6 +2444,7 @@ static void w3(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     char buf[8192];
     memset(buf, 'A', sizeof(buf));
     mg_ws_send(c, "hi there!", 9, WEBSOCKET_OP_TEXT);
+    mg_ws_printf(c, WEBSOCKET_OP_TEXT, "%s", "hi there2!");
     mg_printf(c, "%s", "boo");
     mg_ws_wrap(c, 3, WEBSOCKET_OP_TEXT);
     mg_ws_send(c, buf, sizeof(buf), WEBSOCKET_OP_TEXT);
@@ -2301,9 +2481,11 @@ static void w2(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   } else if (ev == MG_EV_WS_MSG) {
     struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
     MG_INFO(("Got WS, %lu", wm->data.len));
-    mg_hexdump(wm->data.ptr, wm->data.len);
+    // mg_hexdump(wm->data.ptr, wm->data.len);
     if (wm->data.len == 9) {
       ASSERT(mg_strcmp(wm->data, mg_str("hi there!")) == 0);
+    } else if (wm->data.len == 10) {
+      ASSERT(mg_strcmp(wm->data, mg_str("hi there2!")) == 0);
     } else if (wm->data.len == 3) {
       ASSERT(mg_strcmp(wm->data, mg_str("boo")) == 0);
     } else {
@@ -2622,32 +2804,119 @@ static void test_rpc(void) {
   ASSERT(head == NULL);
 }
 
+static void ph(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+  if (ev == MG_EV_POLL) ++(*(int *) fn_data);
+  (void) c, (void) ev_data;
+}
+
+static void test_poll(void) {
+  int count = 0, i;
+  struct mg_mgr mgr;
+  mg_mgr_init(&mgr);
+  mg_http_listen(&mgr, "http://127.0.0.1:42346", ph, &count); // To prevent bind errors on Windows
+  for (i = 0; i < 10; i++) mg_mgr_poll(&mgr, 0);
+  ASSERT(count == 10);
+  mg_mgr_free(&mgr);
+}
+
+#define NMESSAGES 99999
+static uint32_t s_qcrc = 0;
+static int s_out, s_in;
+static void producer(void *param) {
+  struct mg_queue *q = (struct mg_queue *) param;
+  char tmp[64 * 1024], *buf;
+  size_t len, ofs = sizeof(tmp);
+  for (s_out = 0; s_out < NMESSAGES; s_out++) {
+    if (ofs >= sizeof(tmp)) mg_random(tmp, sizeof(tmp)), ofs = 0;
+    len = ((uint8_t *) tmp)[ofs] % 55 + 1;
+    if (ofs + len > sizeof(tmp)) len = sizeof(tmp) - ofs;
+    while ((mg_queue_book(q, &buf, len)) < len) (void) 0;
+    memcpy(buf, &tmp[ofs], len);
+    s_qcrc = mg_crc32(s_qcrc, buf, len);
+    ofs += len;
+#if 0
+    fprintf(stderr, "-->prod %3d  %8x  %-3lu %zu/%zu/%lu\n", s_out, s_qcrc, len, q->tail,
+           q->head, buf - q->buf);
+#endif
+    mg_queue_add(q, len);
+  }
+}
+
+static uint32_t consumer(struct mg_queue *q) {
+  uint32_t crc = 0;
+  for (s_in = 0; s_in < NMESSAGES; s_in++) {
+    char *buf;
+    size_t len;
+    while ((len = mg_queue_next(q, &buf)) == 0) (void) 0;
+    crc = mg_crc32(crc, buf, len);
+#if 0
+    fprintf(stderr, "-->cons %3u  %8x  %-3lu %zu/%zu/%lu\n", s_in, crc, len, q->tail,
+           q->head, buf - q->buf);
+#endif
+    mg_queue_del(q, len);
+  }
+  return crc;
+}
+
+#if MG_ARCH == MG_ARCH_WIN32
+static void start_thread(void (*f)(void *), void *p) {
+  _beginthread((void(__cdecl *)(void *)) f, 0, p);
+}
+#elif MG_ARCH == MG_ARCH_UNIX
+#include <pthread.h>
+static void start_thread(void (*f)(void *), void *p) {
+  union {
+    void (*f1)(void *);
+    void *(*f2)(void *);
+  } u = {f};
+  pthread_t thread_id = (pthread_t) 0;
+  pthread_attr_t attr;
+  (void) pthread_attr_init(&attr);
+  (void) pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  pthread_create(&thread_id, &attr, u.f2, p);
+  pthread_attr_destroy(&attr);
+}
+#else
+static void start_thread(void (*f)(void *), void *p) {
+  (void) f, (void) p;
+}
+#endif
+
+static void test_queue(void) {
+  char buf[512];
+  struct mg_queue queue;
+  uint32_t crc;
+  memset(buf, 0x55, sizeof(buf));
+  mg_queue_init(&queue, buf, sizeof(buf));
+  start_thread(producer, &queue);  // Start producer in a separate thread
+  crc = consumer(&queue);          // Consumer eats data in this thread
+  MG_INFO(("CRC1 %8x", s_qcrc));   // Show CRCs
+  MG_INFO(("CRC2 %8x", crc));
+  ASSERT(s_qcrc == crc);
+}
+
 int main(void) {
   const char *debug_level = getenv("V");
   if (debug_level == NULL) debug_level = "3";
   mg_log_set(atoi(debug_level));
 
   test_json();
+  test_queue();
   test_rpc();
   test_str();
   test_globmatch();
   test_get_header_var();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM)
-    test_rewrites();
+  test_rewrites();
   test_check_ip_acl();
   test_udp();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM) {
-    test_pipe();
-    test_packed();
-  }
+  test_pipe();
+  test_packed();
   test_crc32();
   test_multipart();
   test_invalid_listen_addr();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM) {
-    test_http_chunked();
-    test_http_upload();
-    test_http_stream_buffer();
-  }
+  test_http_chunked();
+  test_http_upload();
+  test_http_stream_buffer();
   test_http_parse();
   test_util();
   test_dns();
@@ -2658,24 +2927,17 @@ int main(void) {
   test_base64();
   test_http_get_var();
   test_tls();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM) {
-    test_ws();
-    test_ws_fragmentation();
-    test_http_client();
-  }
-  if (sizeof(void*) != 4)
-    test_http_server();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM) {
-    test_http_404();
-#ifndef WASM_WORKAROUND_DISABLE_DRAINING
-    test_http_no_content_length();
-#endif
-    test_http_pipeline();
-    test_http_range();
-  }
+  test_ws();
+  test_ws_fragmentation();
+  test_http_client();
+  test_http_server();
+  test_http_404();
+  test_http_no_content_length();
+  test_http_pipeline();
+  test_http_range();
   test_sntp();
-  if (MG_BIG_ENDIAN || sizeof(void*) != 4 || MG_ARCH == MG_ARCH_WASM)
-    test_mqtt();
+  test_mqtt();
+  test_poll();
   printf("SUCCESS. Total tests: %d\n", s_num_tests);
 
   return EXIT_SUCCESS;

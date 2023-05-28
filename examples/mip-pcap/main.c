@@ -18,33 +18,69 @@ void signal_handler(int signo) {
   s_signo = signo;
 }
 
-static size_t pcap_tx(const void *buf, size_t len, void *userdata) {
-  int res = pcap_inject((pcap_t *) userdata, buf, len);
+static size_t pcap_tx(const void *buf, size_t len, struct mg_tcpip_if *ifp) {
+  int res = pcap_inject((pcap_t *) ifp->driver_data, buf, len);
   if (res == PCAP_ERROR) {
     MG_ERROR(("pcap_inject: %d", res));
   }
   return res == PCAP_ERROR ? 0 : len;
 }
 
-static bool pcap_up(void *userdata) {
-  return userdata ? true : false;
+static bool pcap_up(struct mg_tcpip_if *ifp) {
+  return ifp->driver_data ? true : false;
 }
 
-static size_t pcap_rx(void *buf, size_t len, void *userdata) {
+static size_t pcap_rx(void *buf, size_t len, struct mg_tcpip_if *ifp) {
   size_t received = 0;
   struct pcap_pkthdr *hdr = NULL;
   const unsigned char *pkt = NULL;
   usleep(1000);  // Sleep 1 millisecond. This is to avoid 100% CPU
-  if (pcap_next_ex((pcap_t *) userdata, &hdr, &pkt) == 1) {  // Yes, read
+  if (pcap_next_ex((pcap_t *) ifp->driver_data, &hdr, &pkt) == 1) {
     received = hdr->len < len ? hdr->len : len;
     memcpy(buf, pkt, received);
   }
   return received;
 }
 
+static void fn2(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+  if (ev == MG_EV_HTTP_MSG) {
+    struct mg_http_message *hm = (struct mg_http_message *) ev_data;
+    MG_DEBUG(("Got response (%d) %.*s...", (int) hm->message.len, 12,
+              hm->message.ptr));
+    c->is_closing = 1;
+  } else if (ev == MG_EV_CONNECT) {
+    mg_printf(c, "GET %s HTTP/1.1\r\n\r\n", mg_url_uri((char *) fn_data));
+  } else if (ev == MG_EV_CLOSE) {
+    free(fn_data);
+  }
+}
+
+static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
+  if (ev == MG_EV_HTTP_MSG) {
+    struct mg_http_message *hm = (struct mg_http_message *) ev_data;
+    if (mg_http_match_uri(hm, "/api/debug")) {
+      int level = mg_json_get_long(hm->body, "$.level", MG_LL_DEBUG);
+      mg_log_set(level);
+      mg_http_reply(c, 200, "", "Debug level set to %d\n", level);
+    } else if (mg_http_match_uri(hm, "/api/url")) {
+      char *url = mg_json_get_str(hm->body, "$.url");
+      if (url == NULL) {
+        mg_http_reply(c, 200, NULL, "no url, rl %d\r\n", (int) c->recv.len);
+      } else {
+        mg_http_connect(c->mgr, url, fn2, url);
+        mg_http_reply(c, 200, NULL, "ok\r\n");
+      }
+    } else {
+      mg_http_reply(c, 200, NULL, "%.*s\r\n", (int) hm->message.len,
+                    hm->message.ptr);
+    }
+  }
+  (void) ev_data, (void) fn_data;
+}
+
 int main(int argc, char *argv[]) {
   const char *iface = "lo0";              // Network iface
-  const char *mac = "00:00:01:02:03:77";  // MAC address
+  const char *mac = "02:00:01:02:03:77";  // MAC address
   const char *bpf = NULL;  // "host x.x.x.x or ether host ff:ff:ff:ff:ff:ff";
   char errbuf[PCAP_ERRBUF_SIZE] = "";
 
@@ -92,19 +128,17 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
-  struct mg_mgr mgr;  // Event manager
-  mg_mgr_init(&mgr);  // Initialise event manager
+  struct mg_mgr mgr;        // Event manager
+  mg_mgr_init(&mgr);        // Initialise event manager
+  mg_log_set(MG_LL_DEBUG);  // Set log level
 
-  struct mip_cfg c = {.ip = 0, .mask = 0, .gw = 0};
-  sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &c.mac[0], &c.mac[1], &c.mac[2],
-         &c.mac[3], &c.mac[4], &c.mac[5]);
-
-  struct mip_driver driver = {.tx = pcap_tx, .up = pcap_up, .rx = pcap_rx};
-  mip_init(&mgr, &c, &driver, ph);
+  struct mg_tcpip_driver driver = {.tx = pcap_tx, .up = pcap_up, .rx = pcap_rx};
+  struct mg_tcpip_if mif = {.driver = &driver, .driver_data = ph};
+  sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mif.mac[0], &mif.mac[1],
+         &mif.mac[2], &mif.mac[3], &mif.mac[4], &mif.mac[5]);
+  mg_tcpip_init(&mgr, &mif);
   MG_INFO(("Init done, starting main loop"));
-
-  extern void device_dashboard_fn(struct mg_connection *, int, void *, void *);
-  mg_http_listen(&mgr, "http://0.0.0.0:8000", device_dashboard_fn, &mgr);
+  mg_http_listen(&mgr, "http://0.0.0.0:8000", fn, &mgr);
 
   while (s_signo == 0) mg_mgr_poll(&mgr, 100);  // Infinite event loop
 

@@ -52,10 +52,12 @@ void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
       mg_http_reply(c, 403, "", "Denied\n");
     } else if (mg_http_match_uri(hm, "/api/data")) {
       mg_http_reply(c, 200, "Content-Type: application/json\r\n",
-                    "{%Q:%Q,%Q:%Q}\n", "text", "Hello!", "data", "somedata");
+                    "{%m:%m,%m:%m}\n", MG_ESC("text"), MG_ESC("Hello!"),
+                    MG_ESC("data"), MG_ESC("somedata"));
     } else if (mg_http_match_uri(hm, "/api/login")) {
       mg_http_reply(c, 200, "Content-Type: application/json\r\n",
-                    "{%Q:%Q,%Q:%Q}\n", "user", u->name, "token", u->token);
+                    "{%m:%m,%m:%m}\n", MG_ESC("user"), MG_ESC(u->name),
+                    MG_ESC("token"), MG_ESC(u->token));
     } else {
       struct mg_http_serve_opts opts = {.root_dir = "web_root"};
       mg_http_serve_dir(c, ev_data, &opts);

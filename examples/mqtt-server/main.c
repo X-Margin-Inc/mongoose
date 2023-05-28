@@ -103,9 +103,20 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
                  mm->data.ptr, (int) mm->topic.len, mm->topic.ptr));
         for (struct sub *sub = s_subs; sub != NULL; sub = sub->next) {
           if (mg_match(mm->topic, sub->topic, NULL)) {
-            mg_mqtt_pub(sub->c, mm->topic, mm->data, 1, false);
+            struct mg_mqtt_opts pub_opts;
+            memset(&pub_opts, 0, sizeof(pub_opts));
+            pub_opts.topic = mm->topic;
+            pub_opts.message = mm->data;
+            pub_opts.qos = 1, pub_opts.retain = false;
+            mg_mqtt_pub(sub->c, &pub_opts);
           }
         }
+        break;
+      }
+      case MQTT_CMD_PINGREQ: {
+        // The server must send a PINGRESP packet in response to a PINGREQ packet [MQTT-3.12.4-1]
+        MG_INFO(("PINGREQ %p -> PINGRESP", c->fd));
+        mg_mqtt_send_header(c, MQTT_CMD_PINGRESP, 0, 0);
         break;
       }
     }

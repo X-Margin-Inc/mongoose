@@ -4,8 +4,24 @@
 #define MG_ENABLE_LOG 1
 #endif
 
-#ifndef MG_ENABLE_MIP
-#define MG_ENABLE_MIP 0
+#ifndef MG_ENABLE_TCPIP
+#define MG_ENABLE_TCPIP 0  // Mongoose built-in network stack
+#endif
+
+#ifndef MG_ENABLE_LWIP
+#define MG_ENABLE_LWIP 0  // lWIP network stack
+#endif
+
+#ifndef MG_ENABLE_FREERTOS_TCP
+#define MG_ENABLE_FREERTOS_TCP 0  // Amazon FreeRTOS-TCP network stack
+#endif
+
+#ifndef MG_ENABLE_RL
+#define MG_ENABLE_RL 0  // ARM MDK network stack
+#endif
+
+#ifndef MG_ENABLE_SOCKET
+#define MG_ENABLE_SOCKET !MG_ENABLE_TCPIP
 #endif
 
 #ifndef MG_ENABLE_POLL
@@ -18,10 +34,6 @@
 
 #ifndef MG_ENABLE_FATFS
 #define MG_ENABLE_FATFS 0
-#endif
-
-#ifndef MG_ENABLE_SOCKET
-#define MG_ENABLE_SOCKET 1
 #endif
 
 #ifndef MG_ENABLE_MBEDTLS
@@ -73,14 +85,20 @@
 #define MG_ENABLE_PACKED_FS 0
 #endif
 
-// Granularity of the send/recv IO buffer growth
-#ifndef MG_IO_SIZE
-#define MG_IO_SIZE 2048
+#ifndef MG_ENABLE_ASSERT
+#define MG_ENABLE_ASSERT 0
 #endif
 
-// Maximum size of the recv IO buffer
+#ifndef MG_IO_SIZE
+#define MG_IO_SIZE 2048  // Granularity of the send/recv IO buffer growth
+#endif
+
 #ifndef MG_MAX_RECV_SIZE
-#define MG_MAX_RECV_SIZE (3 * 1024 * 1024)
+#define MG_MAX_RECV_SIZE (3 * 1024 * 1024)  // Maximum recv IO buffer size
+#endif
+
+#ifndef MG_DATA_SIZE
+#define MG_DATA_SIZE 32  // struct mg_connection :: data size
 #endif
 
 #ifndef MG_MAX_HTTP_HEADERS
@@ -113,6 +131,18 @@
 #else
 #define MG_ENABLE_FILE 0
 #endif
+#endif
+
+#ifndef MG_INVALID_SOCKET
+#define MG_INVALID_SOCKET (-1)
+#endif
+
+#ifndef MG_SOCKET_TYPE
+#define MG_SOCKET_TYPE int
+#endif
+
+#ifndef MG_SOCKET_ERRNO
+#define MG_SOCKET_ERRNO errno
 #endif
 
 #if MG_ENABLE_EPOLL

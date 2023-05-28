@@ -24,14 +24,12 @@ static void wcb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
       mg_printf(c, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
       mg_http_printf_chunk(c, "ID PROTO TYPE      LOCAL           REMOTE\n");
       for (struct mg_connection *t = c->mgr->conns; t != NULL; t = t->next) {
-        char loc[40], rem[40];
-        mg_http_printf_chunk(c, "%-3lu %4s %s %-15s %s\n", t->id,
+        mg_http_printf_chunk(c, "%-3lu %4s %s %M %M\n", t->id,
                              t->is_udp ? "UDP" : "TCP",
                              t->is_listening  ? "LISTENING"
                              : t->is_accepted ? "ACCEPTED "
                                               : "CONNECTED",
-                             mg_straddr(&t->loc, loc, sizeof(loc)),
-                             mg_straddr(&t->rem, rem, sizeof(rem)));
+                             mg_print_ip, &t->loc, mg_print_ip, &t->rem);
       }
       mg_http_printf_chunk(c, "");  // Don't forget the last empty chunk
     } else {
@@ -43,14 +41,14 @@ static void wcb(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   }
 }
 
-// We have no valid system time(), and we need it for TLS. Implement it
-time_t time(time_t *tp) {
-  time_t t = s_boot_timestamp + k_uptime_get() / 1000;
+// example system time()-like function
+time_t ourtime(time_t *tp) {
+  time_t t = s_boot_timestamp + mg_millis() / 1000;
   if (tp != NULL) *tp = t;
   return t;
 }
 
-// SNTP callback. Modifies s_boot_timestamp, to make time() correct
+// SNTP callback. Modifies s_boot_timestamp, to make ourtime() correct
 static void sfn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
   if (ev == MG_EV_SNTP_TIME) {
     int64_t t = *(int64_t *) ev_data;

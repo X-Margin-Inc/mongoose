@@ -45,13 +45,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
       if (version > 0 && version == s_version) {
         // Version match: no changes
         mg_http_reply(c, 200, "Content-Type: application/json\r\n",
-                      "{%Q:%Q,%Q:%ld}\n", "status", "no change", "version",
-                      version);
+                      "{%m:%m,%m:%ld}\n", MG_ESC("status"), MG_ESC("no change"),
+                      MG_ESC("version"), version);
       } else {
         // Version mismatch, return data
         mg_http_reply(c, 200, "Content-Type: application/json\r\n",
-                      "{%Q:%ld,%Q:[%M]}\n", "version", s_version, "data",
-                      printdata);
+                      "{%m:%ld,%m:[%M]}\n", MG_ESC("version"), s_version,
+                      MG_ESC("data"), printdata);
       }
     } else {
       struct mg_http_serve_opts opts = {.root_dir = s_root_dir};

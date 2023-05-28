@@ -52,12 +52,13 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
       if (version > 0 && version != s_version) {
         // Version mismatch: s_data has changed while client fetches it
         // Tell client to restart
-        mg_http_reply(c, 200, headers, "{%Q:%Q, %Q:%ld}", "error",
-                      "wrong version", "version", version);
+        mg_http_reply(c, 200, headers, "{%m:%m, %m:%ld}", MG_ESC("error"),
+                      MG_ESC("wrong version"), MG_ESC("version"), version);
       } else {
         // Return data, up to CHUNK_SIZE elements
-        mg_http_reply(c, 200, headers, "{%Q:%ld,%Q:%ld,%Q:[%M]}", "version",
-                      s_version, "start", start, "data", printdata, start);
+        mg_http_reply(c, 200, headers, "{%m:%ld,%m:%ld,%m:[%M]}",
+                      MG_ESC("version"), s_version, MG_ESC("start"), start,
+                      MG_ESC("data"), printdata, start);
       }
     } else {
       struct mg_http_serve_opts opts = {0};

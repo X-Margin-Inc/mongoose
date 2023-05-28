@@ -5,7 +5,9 @@
 //    1. Run `make`. This builds and starts a proxy on port 8000
 //    2. Start your browser, go to https://localhost:8000
 //
-// To enable SSL/TLS, add SSL=OPENSSL or SSL=MBEDTLS
+// To enable SSL/TLS, see https://mongoose.ws/tutorials/tls/#how-to-build
+
+#include "mongoose.h"
 
 static const char *s_backend_url =
 #if defined(MG_ENABLE_MBEDTLS) || defined(MG_ENABLE_OPENSSL) || defined(MG_ENABLE_WOLFSSL)
@@ -14,8 +16,6 @@ static const char *s_backend_url =
     "http://info.cern.ch";
 #endif
 static const char *s_listen_url = "http://localhost:8000";
-
-#include "mongoose.h"
 
 // Forward client request to the backend connection, rewriting the Host header
 static void forward_request(struct mg_http_message *hm,
@@ -64,6 +64,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
       }
       c->fn_data = c2;
       forward_request(hm, c2);
+      c->is_resp = 0; // process further msgs in keep-alive connection
       c2->is_hexdumping = 1;
     }
   } else if (ev == MG_EV_CLOSE) {

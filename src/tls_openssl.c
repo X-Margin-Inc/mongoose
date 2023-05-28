@@ -1,4 +1,4 @@
-#include "fmt.h"
+#include "printf.h"
 #include "tls.h"
 
 #if MG_ENABLE_OPENSSL
@@ -90,11 +90,14 @@ void mg_tls_init(struct mg_connection *c, const struct mg_tls_opts *opts) {
     }
   }
   if (opts->ciphers != NULL) SSL_set_cipher_list(tls->ssl, opts->ciphers);
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
   if (opts->srvname.len > 0) {
     char *s = mg_mprintf("%.*s", (int) opts->srvname.len, opts->srvname.ptr);
     SSL_set1_host(tls->ssl, s);
+    SSL_set_tlsext_host_name(tls->ssl, s);
     free(s);
   }
+#endif
   c->tls = tls;
   c->is_tls = 1;
   c->is_tls_hs = 1;

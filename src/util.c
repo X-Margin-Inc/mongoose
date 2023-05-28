@@ -48,11 +48,16 @@ uint16_t mg_ntohs(uint16_t net) {
 }
 
 uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len) {
-  int i;
+  static const uint32_t crclut[16] = {
+      // table for polynomial 0xEDB88320 (reflected)
+      0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC, 0x76DC4190, 0x6B6B51F4,
+      0x4DB26158, 0x5005713C, 0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C,
+      0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C};
   crc = ~crc;
   while (len--) {
-    crc ^= *(unsigned char *) buf++;
-    for (i = 0; i < 8; i++) crc = crc & 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1;
+    uint8_t byte = *(uint8_t *)buf++;
+    crc = crclut[(crc ^ byte) & 0x0F] ^ (crc >> 4);
+    crc = crclut[(crc ^ (byte >> 4)) & 0x0F] ^ (crc >> 4);
   }
   return ~crc;
 }
@@ -96,14 +101,18 @@ uint64_t mg_millis(void) {
   return time_us_64() / 1000;
 #elif MG_ARCH == MG_ARCH_ESP32
   return esp_timer_get_time() / 1000;
-#elif MG_ARCH == MG_ARCH_ESP8266
-  return xTaskGetTickCount() * portTICK_PERIOD_MS;
-#elif MG_ARCH == MG_ARCH_FREERTOS_TCP || MG_ARCH == MG_ARCH_FREERTOS_LWIP
+#elif MG_ARCH == MG_ARCH_ESP8266 || MG_ARCH == MG_ARCH_FREERTOS
   return xTaskGetTickCount() * portTICK_PERIOD_MS;
 #elif MG_ARCH == MG_ARCH_AZURERTOS
   return tx_time_get() * (1000 /* MS per SEC */ / TX_TIMER_TICKS_PER_SECOND);
+#elif MG_ARCH == MG_ARCH_TIRTOS
+  return (uint64_t) Clock_getTicks();
 #elif MG_ARCH == MG_ARCH_ZEPHYR
   return (uint64_t) k_uptime_get();
+#elif MG_ARCH == MG_ARCH_CMSIS_RTOS1
+  return (uint64_t)rt_time_get();
+#elif MG_ARCH == MG_ARCH_CMSIS_RTOS2
+  return (uint64_t)((osKernelGetTickCount() * 1000) / osKernelGetTickFreq());
 #elif MG_ARCH == MG_ARCH_UNIX && defined(__APPLE__)
   // Apple CLOCK_MONOTONIC_RAW is equivalent to CLOCK_BOOTTIME on linux
   // Apple CLOCK_UPTIME_RAW is equivalent to CLOCK_MONOTONIC_RAW on linux
@@ -130,4 +139,3 @@ uint64_t mg_millis(void) {
 #endif
 }
 #endif
-

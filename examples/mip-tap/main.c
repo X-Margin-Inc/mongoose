@@ -1,20 +1,29 @@
 // Copyright (c) 2022 Cesanta Software Limited
 // All rights reserved
 //
-// example using MIP and a TUN/TAP interface
+// example using built-in TCP/IP stack and TUN/TAP interface
 
-#include "mongoose.h"
+#include <sys/socket.h>
+#ifndef __OpenBSD__
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#else
+#include <net/if.h>
+#include <net/if_tun.h>
+#include <net/if_types.h>
+#endif
 #include <sys/ioctl.h>
+
+#include "mongoose.h"
+#include "net.h"
 
 static int s_signo;
 void signal_handler(int signo) {
   s_signo = signo;
 }
 
-static size_t tap_tx(const void *buf, size_t len, void *userdata) {
-  ssize_t res = write((int) userdata, buf, len);
+static size_t tap_tx(const void *buf, size_t len, struct mg_tcpip_if *ifp) {
+  ssize_t res = write(*(int *) ifp->driver_data, buf, len);
   if (res < 0) {
     MG_ERROR(("tap_tx failed: %d", errno));
     return 0;
@@ -22,12 +31,12 @@ static size_t tap_tx(const void *buf, size_t len, void *userdata) {
   return (size_t) res;
 }
 
-static bool tap_up(void *userdata) {
-  return userdata ? true : false;
+static bool tap_up(struct mg_tcpip_if *ifp) {
+  return ifp->driver_data ? true : false;
 }
 
-static size_t tap_rx(void *buf, size_t len, void *userdata) {
-  ssize_t received = read((int) userdata, buf, len);
+static size_t tap_rx(void *buf, size_t len, struct mg_tcpip_if *ifp) {
+  ssize_t received = read(*(int *) ifp->driver_data, buf, len);
   usleep(1);  // This is to avoid 100% CPU
   if (received < 0) return 0;
   return (size_t) received;
@@ -35,7 +44,7 @@ static size_t tap_rx(void *buf, size_t len, void *userdata) {
 
 int main(int argc, char *argv[]) {
   const char *iface = "tap0";             // Network iface
-  const char *mac = "00:00:01:02:03:77";  // MAC address
+  const char *mac = "02:00:01:02:03:77";  // MAC address
 
   // Parse options
   for (int i = 1; i < argc; i++) {
@@ -52,15 +61,28 @@ int main(int argc, char *argv[]) {
   }
 
   // Open network interface
-  int fd = open("/dev/net/tun", O_RDWR);
+#ifndef __OpenBSD__
+  const char *tuntap_device = "/dev/net/tun";
+#else
+  const char *tuntap_device = "/dev/tap0";
+#endif
+  int fd = open(tuntap_device, O_RDWR);
   struct ifreq ifr;
   memset(&ifr, 0, sizeof(ifr));
   strncpy(ifr.ifr_name, iface, IFNAMSIZ);
+#ifndef __OpenBSD__
   ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
   if (ioctl(fd, TUNSETIFF, (void *) &ifr) < 0) {
     MG_ERROR(("Failed to setup TAP interface: %s", ifr.ifr_name));
-    return EXIT_FAILURE;
+    abort();  // return EXIT_FAILURE;
   }
+#else
+  ifr.ifr_flags = (short) (IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
+  if (ioctl(fd, TUNSIFMODE, (void *) &ifr) < 0) {
+    MG_ERROR(("Failed to setup TAP interface: %s", ifr.ifr_name));
+    abort();  // return EXIT_FAILURE;
+  }
+#endif
   fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);  // Non-blocking mode
 
   MG_INFO(("Opened TAP interface: %s", iface));
@@ -70,17 +92,21 @@ int main(int argc, char *argv[]) {
   struct mg_mgr mgr;  // Event manager
   mg_mgr_init(&mgr);  // Initialise event manager
 
-  struct mip_cfg c = {.ip = 0, .mask = 0, .gw = 0};
-  sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &c.mac[0], &c.mac[1], &c.mac[2],
-         &c.mac[3], &c.mac[4], &c.mac[5]);
-
-  struct mip_driver driver = {.tx = tap_tx, .up = tap_up, .rx = tap_rx};
-  mip_init(&mgr, &c, &driver, (void *) fd);
+  struct mg_tcpip_driver driver = {.tx = tap_tx, .up = tap_up, .rx = tap_rx};
+  struct mg_tcpip_if mif = {.driver = &driver, .driver_data = &fd};
+  sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mif.mac[0], &mif.mac[1],
+         &mif.mac[2], &mif.mac[3], &mif.mac[4], &mif.mac[5]);
+  mg_tcpip_init(&mgr, &mif);
   MG_INFO(("Init done, starting main loop"));
 
-  extern void device_dashboard_fn(struct mg_connection *, int, void *, void *);
-  mg_http_listen(&mgr, "http://0.0.0.0:8000", device_dashboard_fn, &mgr);
+  // Start infinite event loop
+  MG_INFO(("Mongoose version : v%s", MG_VERSION));
+  MG_INFO(("Listening on     : %s", HTTP_URL));
+#if MG_ENABLE_MBEDTLS || MG_ENABLE_OPENSSL
+  MG_INFO(("Listening on     : %s", HTTPS_URL));
+#endif
 
+  web_init(&mgr);
   while (s_signo == 0) mg_mgr_poll(&mgr, 100);  // Infinite event loop
 
   mg_mgr_free(&mgr);

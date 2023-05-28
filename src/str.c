@@ -74,6 +74,7 @@ const char *mg_strstr(const struct mg_str haystack,
                       const struct mg_str needle) {
   size_t i;
   if (needle.len > haystack.len) return NULL;
+  if (needle.len == 0) return haystack.ptr;
   for (i = 0; i <= haystack.len - needle.len; i++) {
     if (memcmp(haystack.ptr + i, needle.ptr, needle.len) == 0) {
       return haystack.ptr + i;
@@ -184,32 +185,6 @@ void mg_unhex(const char *buf, size_t len, unsigned char *to) {
   for (i = 0; i < len; i += 2) {
     to[i >> 1] = (unsigned char) mg_unhexn(&buf[i], 2);
   }
-}
-
-uint64_t mg_tou64(struct mg_str str) {
-  uint64_t result = 0;
-  size_t i = 0;
-  while (i < str.len && (str.ptr[i] == ' ' || str.ptr[i] == '\t')) i++;
-  while (i < str.len && str.ptr[i] >= '0' && str.ptr[i] <= '9') {
-    result *= 10;
-    result += (unsigned) (str.ptr[i] - '0');
-    i++;
-  }
-  return result;
-}
-
-int64_t mg_to64(struct mg_str str) {
-  int64_t result = 0, neg = 1, max = 922337203685477570 /* INT64_MAX/10-10 */;
-  size_t i = 0;
-  while (i < str.len && (str.ptr[i] == ' ' || str.ptr[i] == '\t')) i++;
-  if (i < str.len && str.ptr[i] == '-') neg = -1, i++;
-  while (i < str.len && str.ptr[i] >= '0' && str.ptr[i] <= '9') {
-    if (result > max) return 0;
-    result *= 10;
-    result += (str.ptr[i] - '0');
-    i++;
-  }
-  return result * neg;
 }
 
 char *mg_remove_double_dots(char *s) {

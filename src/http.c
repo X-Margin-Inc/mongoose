@@ -1,13 +1,31 @@
+#include "http.h"
 #include "arch.h"
 #include "base64.h"
 #include "fmt.h"
-#include "http.h"
+#include "json.h"
 #include "log.h"
 #include "net.h"
+#include "printf.h"
 #include "ssi.h"
 #include "util.h"
 #include "version.h"
 #include "ws.h"
+
+bool mg_to_size_t(struct mg_str str, size_t *val);
+bool mg_to_size_t(struct mg_str str, size_t *val) {
+  uint64_t result = 0, max = 1844674407370955160 /* (UINT64_MAX-9)/10 */;
+  size_t i = 0;
+  while (i < str.len && (str.ptr[i] == ' ' || str.ptr[i] == '\t')) i++;
+  if (i < str.len && str.ptr[i] == '-') return false;
+  while (i < str.len && str.ptr[i] >= '0' && str.ptr[i] <= '9') {
+    if (result > max) return false;
+    result *= 10;
+    result += (unsigned) (str.ptr[i] - '0');
+    i++;
+  }
+  *val = (size_t) result;
+  return true;
+}
 
 // Chunk deletion marker is the MSB in the "processed" counter
 #define MG_DMARK ((size_t) 1 << (sizeof(size_t) * 8 - 1))
@@ -71,23 +89,22 @@ void mg_http_bauth(struct mg_connection *c, const char *user,
   if (c->send.size < need) mg_iobuf_resize(&c->send, need);
   if (c->send.size >= need) {
     int i, n = 0;
-    char *buf = (char *) &c->send.buf[c->send.len + 21];
-    memcpy(&buf[-21], "Authorization: Basic ", 21);  // DON'T use mg_send!
+    char *buf = (char *) &c->send.buf[c->send.len];
+    memcpy(buf, "Authorization: Basic ", 21);  // DON'T use mg_send!
     for (i = 0; i < (int) u.len; i++) {
-      n = mg_base64_update(((unsigned char *) u.ptr)[i], buf, n);
+      n = mg_base64_update(((unsigned char *) u.ptr)[i], buf + 21, n);
     }
     if (p.len > 0) {
-      n = mg_base64_update(':', buf, n);
+      n = mg_base64_update(':', buf + 21, n);
       for (i = 0; i < (int) p.len; i++) {
-        n = mg_base64_update(((unsigned char *) p.ptr)[i], buf, n);
+        n = mg_base64_update(((unsigned char *) p.ptr)[i], buf + 21, n);
       }
     }
-    n = mg_base64_final(buf, n);
+    n = mg_base64_final(buf + 21, n);
     c->send.len += 21 + (size_t) n + 2;
     memcpy(&c->send.buf[c->send.len - 2], "\r\n", 2);
   } else {
-    MG_ERROR(("%lu %s cannot resize iobuf %d->%d ", c->id, c->label,
-              (int) c->send.size, (int) need));
+    MG_ERROR(("%lu oom %d->%d ", c->id, (int) c->send.size, (int) need));
   }
 }
 
@@ -232,7 +249,7 @@ int mg_http_parse(const char *s, size_t len, struct mg_http_message *hm) {
   mg_http_parse_headers(s, end, hm->headers,
                         sizeof(hm->headers) / sizeof(hm->headers[0]));
   if ((cl = mg_http_get_header(hm, "Content-Length")) != NULL) {
-    hm->body.len = (size_t) mg_to64(*cl);
+    if (mg_to_size_t(*cl, &hm->body.len) == false) return -1;
     hm->message.len = (size_t) req_len + hm->body.len;
   }
 
@@ -320,17 +337,16 @@ void mg_http_reply(struct mg_connection *c, int code, const char *headers,
                    const char *fmt, ...) {
   va_list ap;
   size_t len;
-  mg_printf(c, "HTTP/1.1 %d %s\r\n%sContent-Length:           \r\n\r\n", code,
+  mg_printf(c, "HTTP/1.1 %d %s\r\n%sContent-Length:            \r\n\r\n", code,
             mg_http_status_code_str(code), headers == NULL ? "" : headers);
   len = c->send.len;
   va_start(ap, fmt);
   mg_vxprintf(mg_pfn_iobuf, &c->send, fmt, &ap);
   va_end(ap);
-  if (c->send.len > 15) {
-    mg_snprintf((char *) &c->send.buf[len - 14], 11, "%010lu",
-                (unsigned long) (c->send.len - len));
-    c->is_resp = 0;
-    c->send.buf[len - 4] = '\r';  // Change ending 0 to space
+  if (c->send.len > 16) {
+    size_t n = mg_snprintf((char *) &c->send.buf[len - 15], 11, "%-10lu",
+                           (unsigned long) (c->send.len - len));
+    c->send.buf[len - 15 + n] = ' ';  // Change ending 0 to space
   }
   c->is_resp = 0;
 }
@@ -354,7 +370,9 @@ static void static_cb(struct mg_connection *c, int ev, void *ev_data,
   if (ev == MG_EV_WRITE || ev == MG_EV_POLL) {
     struct mg_fd *fd = (struct mg_fd *) fn_data;
     // Read to send IO buffer directly, avoid extra on-stack buffer
-    size_t n, max = MG_IO_SIZE, space, *cl = (size_t *) c->label;
+    size_t n, max = MG_IO_SIZE, space;
+    size_t *cl = (size_t *) &c->data[(sizeof(c->data) - sizeof(size_t)) /
+                                     sizeof(size_t) * sizeof(size_t)];
     if (c->send.size < max) mg_iobuf_resize(&c->send, max);
     if (c->send.len >= c->send.size) return;  // Rate limit
     if ((space = c->send.size - c->send.len) > *cl) space = *cl;
@@ -428,18 +446,18 @@ static struct mg_str guess_content_type(struct mg_str path, const char *extra) {
   return mg_str("text/plain; charset=utf-8");
 }
 
-static int getrange(struct mg_str *s, int64_t *a, int64_t *b) {
+static int getrange(struct mg_str *s, size_t *a, size_t *b) {
   size_t i, numparsed = 0;
   // MG_INFO(("%.*s", (int) s->len, s->ptr));
   for (i = 0; i + 6 < s->len; i++) {
     if (memcmp(&s->ptr[i], "bytes=", 6) == 0) {
       struct mg_str p = mg_str_n(s->ptr + i + 6, s->len - i - 6);
       if (p.len > 0 && p.ptr[0] >= '0' && p.ptr[0] <= '9') numparsed++;
-      *a = mg_to64(p);
+      if (!mg_to_size_t(p, a)) return 0;
       // MG_INFO(("PPP [%.*s] %d", (int) p.len, p.ptr, numparsed));
       while (p.len && p.ptr[0] >= '0' && p.ptr[0] <= '9') p.ptr++, p.len--;
       if (p.len && p.ptr[0] == '-') p.ptr++, p.len--;
-      *b = mg_to64(p);
+      if (!mg_to_size_t(p, b)) return 0;
       if (p.len > 0 && p.ptr[0] >= '0' && p.ptr[0] <= '9') numparsed++;
       // MG_INFO(("PPP [%.*s] %d", (int) p.len, p.ptr, numparsed));
       break;
@@ -453,28 +471,30 @@ void mg_http_serve_file(struct mg_connection *c, struct mg_http_message *hm,
                         const struct mg_http_serve_opts *opts) {
   char etag[64], tmp[MG_PATH_MAX];
   struct mg_fs *fs = opts->fs == NULL ? &mg_fs_posix : opts->fs;
-  struct mg_fd *fd = path == NULL ? NULL : mg_fs_open(fs, path, MG_FS_READ);
+  struct mg_fd *fd = NULL;
   size_t size = 0;
   time_t mtime = 0;
   struct mg_str *inm = NULL;
   struct mg_str mime = guess_content_type(mg_str(path), opts->mime_types);
   bool gzip = false;
 
-  // If file does not exist, we try to open file PATH.gz - and if such
-  // pre-compressed .gz file exists, serve it with the Content-Encoding: gzip
-  // Note - we ignore Accept-Encoding, cause we don't have a choice
-  if (fd == NULL) {
-    MG_DEBUG(("NULL [%s]", path));
-    mg_snprintf(tmp, sizeof(tmp), "%s.gz", path);
-    if ((fd = mg_fs_open(fs, tmp, MG_FS_READ)) != NULL) {
-      gzip = true;
-      path = tmp;
-    } else if (opts->page404 != NULL) {
-      // No precompressed file, serve 404
-      fd = mg_fs_open(fs, opts->page404, MG_FS_READ);
-      mime = guess_content_type(mg_str(path), opts->mime_types);
-      path = opts->page404;
+  if (path != NULL) {
+    // If a browser sends us "Accept-Encoding: gzip", try to open .gz first
+    struct mg_str *ae = mg_http_get_header(hm, "Accept-Encoding");
+    if (ae != NULL && mg_strstr(*ae, mg_str("gzip")) != NULL) {
+      mg_snprintf(tmp, sizeof(tmp), "%s.gz", path);
+      fd = mg_fs_open(fs, tmp, MG_FS_READ);
+      if (fd != NULL) gzip = true, path = tmp;
     }
+    // No luck opening .gz? Open what we've told to open
+    if (fd == NULL) fd = mg_fs_open(fs, path, MG_FS_READ);
+  }
+
+  // Failed to open, and page404 is configured? Open it, then
+  if (fd == NULL && opts->page404 != NULL) {
+    fd = mg_fs_open(fs, opts->page404, MG_FS_READ);
+    mime = guess_content_type(mg_str(path), opts->mime_types);
+    path = opts->page404;
   }
 
   if (fd == NULL || fs->st(path, &size, &mtime) == 0) {
@@ -489,12 +509,12 @@ void mg_http_serve_file(struct mg_connection *c, struct mg_http_message *hm,
   } else {
     int n, status = 200;
     char range[100];
-    int64_t r1 = 0, r2 = 0, cl = (int64_t) size;
-
+    size_t r1 = 0, r2 = 0, cl = size;
+    
     // Handle Range header
     struct mg_str *rh = mg_http_get_header(hm, "Range");
     range[0] = '\0';
-    if (rh != NULL && (n = getrange(rh, &r1, &r2)) > 0 && r1 >= 0 && r2 >= 0) {
+    if (rh != NULL && (n = getrange(rh, &r1, &r2)) > 0) {
       // If range is specified like "400-", set second limit to content len
       if (n == 1) r2 = cl - 1;
       if (r1 > r2 || r2 >= cl) {
@@ -506,9 +526,9 @@ void mg_http_serve_file(struct mg_connection *c, struct mg_http_message *hm,
         status = 206;
         cl = r2 - r1 + 1;
         mg_snprintf(range, sizeof(range),
-                    "Content-Range: bytes %lld-%lld/%lld\r\n", r1, r1 + cl - 1,
-                    (int64_t) size);
-        fs->sk(fd->fd, (size_t) r1);
+                    "Content-Range: bytes %llu-%llu/%llu\r\n", (uint64_t) r1,
+                    (uint64_t) (r1 + cl - 1), (uint64_t) size);
+        fs->sk(fd->fd, r1);
       }
     }
     mg_printf(c,
@@ -518,8 +538,8 @@ void mg_http_serve_file(struct mg_connection *c, struct mg_http_message *hm,
               "Content-Length: %llu\r\n"
               "%s%s%s\r\n",
               status, mg_http_status_code_str(status), (int) mime.len, mime.ptr,
-              etag, cl, gzip ? "Content-Encoding: gzip\r\n" : "", range,
-              opts->extra_headers ? opts->extra_headers : "");
+              etag, (uint64_t) cl, gzip ? "Content-Encoding: gzip\r\n" : "",
+              range, opts->extra_headers ? opts->extra_headers : "");
     if (mg_vcasecmp(&hm->method, "HEAD") == 0) {
 #ifndef WASM_WORKAROUND_DISABLE_DRAINING
       c->is_draining = 1;
@@ -527,9 +547,12 @@ void mg_http_serve_file(struct mg_connection *c, struct mg_http_message *hm,
       c->is_resp = 0;
       mg_fs_close(fd);
     } else {
+      // Track to-be-sent content length at the end of c->data, aligned
+      size_t *clp = (size_t *) &c->data[(sizeof(c->data) - sizeof(size_t)) /
+                                        sizeof(size_t) * sizeof(size_t)];
       c->pfn = static_cb;
       c->pfn_data = fd;
-      *(size_t *) c->label = (size_t) cl;  // Track to-be-sent content length
+      *clp = cl;
     }
   }
 }
@@ -562,18 +585,15 @@ static void printdirentry(const char *name, void *userdata) {
     } else {
       mg_snprintf(sz, sizeof(sz), "%lld", (uint64_t) size);
     }
-#if defined(MG_HTTP_DIRLIST_TIME)
-    char time_str[30];
-    struct tm *time_info = localtime(&t);
-    strftime(time_str, sizeof time_str, "%Y/%m/%d %H:%M:%S", time_info);
-    mg_snprintf(mod, sizeof(mod), "%s", time_str);
-#elif defined(MG_HTTP_DIRLIST_TIME_UTC)
-    char time_str[30];
-    struct tm *time_info = gmtime(&t);
-    strftime(time_str, sizeof time_str, "%Y/%m/%d %H:%M:%S", time_info);
-    mg_snprintf(mod, sizeof(mod), "%s", time_str);
+#if defined(MG_HTTP_DIRLIST_TIME_FMT)
+    {
+      char time_str[40];
+      struct tm *time_info = localtime(&t);
+      strftime(time_str, sizeof time_str, "%Y/%m/%d %H:%M:%S", time_info);
+      mg_snprintf(mod, sizeof(mod), "%s", time_str);
+    }
 #else
-    mg_snprintf(mod, sizeof(mod), "%ld", (unsigned long) t);
+    mg_snprintf(mod, sizeof(mod), "%lu", (unsigned long) t);
 #endif
     n = (int) mg_url_encode(name, strlen(name), path, sizeof(path));
     mg_printf(d->c,
@@ -680,6 +700,7 @@ static int uri_to_path2(struct mg_connection *c, struct mg_http_message *hm,
               "Content-Length: 0\r\n"
               "\r\n",
               (int) hm->uri.len, hm->uri.ptr);
+    c->is_resp = 0;
     flags = -1;
   } else if (flags & MG_FS_DIR) {
     if (((mg_snprintf(path + n, path_size - n, "/" MG_HTTP_INDEX) > 0 &&
@@ -750,6 +771,8 @@ size_t mg_url_encode(const char *s, size_t sl, char *buf, size_t len) {
       n += 2;
     }
   }
+  if (len > 0 && n < len - 1) buf[n] = '\0';  // Null-terminate the destination
+  if (len > 0) buf[len - 1] = '\0';           // Always.
   return n;
 }
 
@@ -899,7 +922,7 @@ static void deliver_chunked_chunks(struct mg_connection *c, size_t hlen,
     ofs += pl + dl + 2, del += pl + 2;  // 2 is for \r\n suffix
     processed += dl;
     if (c->recv.len != saved) processed -= dl, buf -= dl;
-    mg_hexdump(c->recv.buf, hlen + processed);
+    // mg_hexdump(c->recv.buf, hlen + processed);
     last = (dl == 0);
   }
   mg_iobuf_del(&c->recv, hlen + processed, del);
@@ -970,6 +993,34 @@ static void http_cb(struct mg_connection *c, int ev, void *evd, void *fnd) {
     }
   }
   (void) evd, (void) fnd;
+}
+
+static void mg_hfn(struct mg_connection *c, int ev, void *ev_data, void *fnd) {
+  if (ev == MG_EV_HTTP_MSG) {
+    struct mg_http_message *hm = (struct mg_http_message *) ev_data;
+    if (mg_http_match_uri(hm, "/quit")) {
+      mg_http_reply(c, 200, "", "ok\n");
+      c->is_draining = 1;
+      c->data[0] = 'X';
+    } else if (mg_http_match_uri(hm, "/debug")) {
+      int level = (int) mg_json_get_long(hm->body, "$.level", MG_LL_DEBUG);
+      mg_log_set(level);
+      mg_http_reply(c, 200, "", "Debug level set to %d\n", level);
+    } else {
+      mg_http_reply(c, 200, "", "hi\n");
+    }
+  } else if (ev == MG_EV_CLOSE) {
+    if (c->data[0] == 'X') *(bool *) fnd = true;
+  }
+}
+
+void mg_hello(const char *url) {
+  struct mg_mgr mgr;
+  bool done = false;
+  mg_mgr_init(&mgr);
+  if (mg_http_listen(&mgr, url, mg_hfn, &done) == NULL) done = true;
+  while (done == false) mg_mgr_poll(&mgr, 100);
+  mg_mgr_free(&mgr);
 }
 
 struct mg_connection *mg_http_connect(struct mg_mgr *mgr, const char *url,

@@ -1,52 +1,44 @@
-PROJECT_DIR ?= /workdir
-ZEPHYR_DIR ?= zephyrproject
-BOARD ?= qemu_x86
-
-ifeq "$(BOARD)" "qemu_x86"
-OVERLAY ?= -DOVERLAY_CONFIG=overlay-e1000.conf
-else
-OVERLAY ?= 
-endif
-
-SHAREUSB ?= --privileged -v /dev/bus/usb/:/dev/bus/usb
-SHARETUN ?= --cap-add=NET_ADMIN --device /dev/net/tun --net=host
-DOCKER ?= docker run --rm -v $(realpath $(CURDIR)):$(PROJECT_DIR)
-REPO ?= zephyrprojectrtos/ci
-
+TOP_DIR ?= $(realpath $(CURDIR)/../../..)
+ZEPHYR_DIR ?= $(realpath $(CURDIR)/..)/zephyrproject
+DOCKER ?= docker run --rm \
+          -v $(TOP_DIR):$(TOP_DIR) \
+          -w $(realpath $(CURDIR)) \
+          -e ZEPHYR_BASE=$(ZEPHYR_DIR)/zephyr \
+          $(DOCKER_ARGS) zephyrprojectrtos/ci
+BUILD_ARGS ?= -b nucleo_f746zg
+.PHONY: build
 
 example:
 	true
 
-build:
-	cp ../../../mongoose.[c,h] src/
-	$(DOCKER) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR)/zephyr && \
-	west build -b $(BOARD) -p auto $(PROJECT_DIR) $(OVERLAY) --build-dir $(PROJECT_DIR)/build'
+zephyr:
+	test -d $(ZEPHYR_DIR) || ( mkdir -p $(ZEPHYR_DIR) ; $(DOCKER) west init $(ZEPHYR_DIR))
+	$(DOCKER) sh -c 'cd $(ZEPHYR_DIR) && west update'
 
+build:
+	cp $(TOP_DIR)/mongoose.[ch] src/
+	$(DOCKER) west build $(BUILD_ARGS) -p auto $(realpath $(CURDIR)) $(OVERLAY)
+
+run: DOCKER_ARGS ?= --cap-add=NET_ADMIN --device /dev/net/tun --net=host -it
 run:
-	$(DOCKER) -it $(SHARETUN) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && \
-	west build -t run --build-dir $(PROJECT_DIR)/build'
+	$(DOCKER) west build -t run
 
 clean:
-	$(DOCKER) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && \
-	west build -t clean --build-dir $(PROJECT_DIR)/build'
+	-$(DOCKER) west build -t clean
 
 pristine:
-	$(DOCKER) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && \
-	west build -t pristine --build-dir $(PROJECT_DIR)/build'
+	-$(DOCKER) west build -t pristine
 
+purge: clean pristine
+	rm -rf $(TOP_DIR)/.west $(ZEPHYR_DIR) build
 
+flash debug: DOCKER_ARGS ?= --privileged -v /dev/bus/usb/:/dev/bus/usb -it
 flash:
-	$(DOCKER) $(SHAREUSB) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && \
-	west flash --build-dir $(PROJECT_DIR)/build'
+	$(DOCKER) west flash --build-dir $(realpath $(CURDIR))/build
 
 debug:
-	$(DOCKER) -it $(SHAREUSB) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && \
-	west debug --build-dir $(PROJECT_DIR)/build'
+	$(DOCKER) west debug --build-dir $(realpath $(CURDIR))/build
 
-.PHONY: build flash zephyr clean pristine run
-
-zephyr: 
-ifeq ($(wildcard $(ZEPHYR_DIR)/.*),)
-	$(DOCKER) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR) && west init ./$(ZEPHYR_DIR)'
-endif
-	$(DOCKER) $(REPO) /bin/sh -c 'cd $(PROJECT_DIR)/$(ZEPHYR_DIR) && west update'
+test: BUILD_ARGS = -b qemu_x86
+test: OVERLAY = -DOVERLAY_CONFIG=overlay-e1000.conf
+test: build run

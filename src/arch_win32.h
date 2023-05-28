@@ -60,6 +60,18 @@ typedef enum { false = 0, true = 1 } bool;
 #endif
 #endif
 
+#define MG_INVALID_SOCKET INVALID_SOCKET
+#define MG_SOCKET_TYPE SOCKET
+typedef unsigned long nfds_t;
+#if defined(_MSC_VER)
+#pragma comment(lib, "ws2_32.lib")
+#ifndef alloca
+#define alloca(a) _alloca(a)
+#endif
+#endif
+#define poll(a, b, c) WSAPoll((a), (b), (c))
+#define closesocket(x) closesocket(x)
+
 typedef int socklen_t;
 #define MG_DIRSEP '\\'
 
@@ -67,15 +79,22 @@ typedef int socklen_t;
 #define MG_PATH_MAX FILENAME_MAX
 #endif
 
-#ifndef EINPROGRESS
-#define EINPROGRESS WSAEINPROGRESS
-#endif
-#ifndef EWOULDBLOCK
-#define EWOULDBLOCK WSAEWOULDBLOCK
+#ifndef SO_EXCLUSIVEADDRUSE
+#define SO_EXCLUSIVEADDRUSE ((int) (~SO_REUSEADDR))
 #endif
 
+#define MG_SOCK_ERR(errcode) ((errcode) < 0 ? WSAGetLastError() : 0)
+
+#define MG_SOCK_PENDING(errcode)                                            \
+  (((errcode) < 0) &&                                                       \
+   (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAEINPROGRESS || \
+    WSAGetLastError() == WSAEWOULDBLOCK))
+
+#define MG_SOCK_RESET(errcode) \
+  (((errcode) < 0) && (WSAGetLastError() == WSAECONNRESET))
+
 #define realpath(a, b) _fullpath((b), (a), MG_PATH_MAX)
-#define sleep(x) Sleep(x)
+#define sleep(x) Sleep((x) *1000)
 #define mkdir(a, b) _mkdir(a)
 
 #ifndef S_ISDIR
@@ -84,6 +103,10 @@ typedef int socklen_t;
 
 #ifndef MG_ENABLE_DIRLIST
 #define MG_ENABLE_DIRLIST 1
+#endif
+
+#ifndef SIGPIPE
+#define SIGPIPE 0
 #endif
 
 #endif

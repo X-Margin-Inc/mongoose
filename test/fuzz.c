@@ -1,7 +1,7 @@
 #define MG_ENABLE_SOCKET 0
 #define MG_ENABLE_LOG 0
 #define MG_ENABLE_LINES 1
-#define MG_ENABLE_MIP 1
+#define MG_ENABLE_TCPIP 1
 
 #include "mongoose.c"
 
@@ -58,29 +58,30 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   mg_json_get(mg_str_n((char *) data, size), "$[0]", &n);
 
   if (size > 0) {
-    struct mip_cfg cfg = {{0,0,0,0,0,0}, 0x01020304, 255, 0x01010101};
-    size_t pktlen = 1540;
-    char t[sizeof(struct mip_if) + pktlen * 2 + 0 /* qlen */];
-    struct mip_if *ifp = (struct mip_if *) t;
+    struct mg_tcpip_if mif = {.ip = 0x01020304,
+                         .mask = 255,
+                         .gw = 0x01010101,
+                         .driver = &mg_tcpip_driver_mock};
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
-    if_init(ifp, &mgr, &cfg, &mip_driver_mock, NULL, pktlen, 0);
+    mg_tcpip_init(&mgr, &mif);
 
     // Make a copy of the random data, in order to modify it
-    uint8_t pkt[size];
+    void *pkt = malloc(size);
     struct eth *eth = (struct eth *) pkt;
     memcpy(pkt, data, size);
     if (size > sizeof(*eth)) {
       static size_t i;
       uint16_t eth_types[] = {0x800, 0x800, 0x806, 0x86dd};
-      memcpy(eth->dst, ifp->mac, 6);  // Set valid destination MAC
+      memcpy(eth->dst, mif.mac, 6);  // Set valid destination MAC
       eth->type = mg_htons(eth_types[i++]);
       if (i >= sizeof(eth_types) / sizeof(eth_types[0])) i = 0;
     }
 
-    mip_rx(ifp, (void *) pkt, size);
-    mgr.priv = NULL;  // Don't let Mongoose free() ifp
+    mg_tcpip_rx(&mif, pkt, size);
     mg_mgr_free(&mgr);
+    free(pkt);
+    mg_tcpip_free(&mif);
   }
 
   return 0;
