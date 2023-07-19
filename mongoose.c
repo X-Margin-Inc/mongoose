@@ -5964,10 +5964,11 @@ long mg_tls_recv(struct mg_connection *c, void *buf, size_t len) {
   int ret, err;
 
   ret = wolfSSL_read(tls->ssl, buf, (int) len);
-  err = wolfSSL_get_error(tls->ssl, ret);
-  if(ret<0 && err != WOLFSSL_ERROR_WANT_READ ) return MG_IO_ERR;
-  if (err == WOLFSSL_ERROR_WANT_READ) return MG_IO_WAIT;
-   
+  if(ret<0){
+    err = wolfSSL_get_error(tls->ssl, ret);
+    if (err == WOLFSSL_ERROR_WANT_READ ) return MG_IO_WAIT;
+    return MG_IO_ERR;
+  }   
   return ret; 
 }
 
