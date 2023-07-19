@@ -5978,7 +5978,7 @@ long mg_tls_send(struct mg_connection *c, const void *buf, size_t len) {
 
   ret = wolfSSL_write(tls->ssl, buf, (int) len);
 
-  if (ret == 0) {
+  if (ret <= 0) {
     err = wolfSSL_get_error(tls->ssl, ret);
     if (err == WOLFSSL_ERROR_WANT_WRITE) return MG_IO_WAIT;
     else return MG_IO_ERR;
