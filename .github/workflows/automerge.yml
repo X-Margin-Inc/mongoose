@@ -1,0 +1,23 @@
+# This file is managed by BetaHuhn/repo-file-sync-action workflow action from devops repository.
+# Do not modify this file manually. Any changes that you make will be overwritten by repo-file-sync-action without warning.
+
+name: automerge
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - synchronize
+    path:
+      - '.github/workflows/**'
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Automerge Pull Request
+      if: contains(github.event.pull_request.labels.*.name, 'sync')
+      run: gh pr merge ${{github.event.number}} --squash --admin --repo $GITHUB_REPOSITORY
+      env:
+        GITHUB_TOKEN: ${{ secrets.TOKEN_GITHUB_ACTIONS }}
