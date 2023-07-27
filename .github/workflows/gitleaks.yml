@@ -1,0 +1,31 @@
+# This file is managed by BetaHuhn/repo-file-sync-action workflow action from devops repository.
+# Do not modify this file manually. Any changes that you make will be overwritten by repo-file-sync-action without warning.
+
+name: gitleaks
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: [self-hosted, Linux, common]
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Clean gitleaks files
+        run: |
+          rm -rf /tmp/gitleaks*
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE}}
+          GITLEAKS_NOTIFY_USER_LIST: '@xmargin-devops'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
