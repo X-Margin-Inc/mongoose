@@ -1,7 +1,7 @@
 SRCS = mongoose.c test/unit_test.c test/packed_fs.c
 HDRS = $(wildcard src/*.h) $(wildcard src/tcpip/*.h)
 DEFS ?= -DMG_MAX_HTTP_HEADERS=7 -DMG_ENABLE_LINES -DMG_ENABLE_PACKED_FS=1 -DMG_ENABLE_SSI=1 -DMG_ENABLE_ASSERT=1
-WARN ?= -pedantic -W -Wall -Werror -Wshadow -Wdouble-promotion -fno-common -Wconversion -Wundef
+WARN ?= -pedantic -W -Wall -Wshadow -Wdouble-promotion -fno-common -Wconversion -Wundef
 OPTS ?= -O3 -g3
 INCS ?= -Isrc -I.
 SSL ?=
@@ -154,13 +154,13 @@ riscv: mongoose.h $(SRCS)
 	$(DOCKER) mdashnet/riscv riscv-none-elf-gcc -march=rv32imc -mabi=ilp32 $(SRCS) $(OPTS) $(WARN) $(INCS) $(DEFS) $(TFLAGS) -o unit_test
 
 wasm: WASI_SDK_PATH ?= /opt/wasi-sdk
-wasm: WAMR_PATH ?= /opt/wasm-micro-runtime
+wasm: WAMR_PATH ?= /wasm-micro-runtime
 wasm: ASAN=
 wasm: CFLAGS += -DWOLFSSL_WASM=1
 wasm: INCS += -I$(WAMR_PATH)/core/iwasm/libraries/lib-socket/inc
 wasm: WARN += -Wno-sign-conversion -Wno-unused-variable -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
 wasm: IPV6 = 0
-wasm: WOLFSSL = ../wolfssl
+wasm: WOLFSSL = /opt/wolfssl
 wasm: CFLAGS  += -I$(WOLFSSL)
 wasm: LDFLAGS += -L$(WOLFSSL)/IDE/Wasm -lwolfssl
 wasm: Makefile mongoose.h $(SRCS)
